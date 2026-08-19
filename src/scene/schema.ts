@@ -2,16 +2,19 @@ import { z } from 'zod'
 import { SCHEMA_VERSION, type SceneDocument } from './document.ts'
 import { PROPERTY_DESCRIPTORS } from './properties.ts'
 import { FLUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
+import { isConvex } from '../core/math/polygon.ts'
 
-const vec2 = z.object({ x: z.number(), y: z.number() })
+const num = z.number().finite()
+
+const vec2 = z.object({ x: num, y: num })
 
 const shape = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('circle'), radius: z.number().positive() }),
-  z.object({ kind: z.literal('box'), hx: z.number().positive(), hy: z.number().positive() }),
+  z.object({ kind: z.literal('circle'), radius: num.positive() }),
+  z.object({ kind: z.literal('box'), hx: num.positive(), hy: num.positive() }),
   z.object({
     kind: z.literal('capsule'),
-    halfHeight: z.number().nonnegative(),
-    radius: z.number().positive(),
+    halfHeight: num.nonnegative(),
+    radius: num.positive(),
   }),
   z.object({
     kind: z.literal('convex'),
@@ -31,33 +34,33 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
     world: z.object({
       gravity: vec2,
       gravityPreset: z.enum(['earth', 'moon', 'mars', 'zero', 'custom']),
-      timeScale: z.number().min(PROPERTY_DESCRIPTORS.timeScale.min!).max(PROPERTY_DESCRIPTORS.timeScale.max!),
+      timeScale: num.min(PROPERTY_DESCRIPTORS.timeScale.min!).max(PROPERTY_DESCRIPTORS.timeScale.max!),
     }),
     bodies: z.array(
       z.object({
         id: z.string(),
         name: z.string(),
         type: z.enum(['dynamic', 'fixed', 'kinematic']),
-        x: z.number(),
-        y: z.number(),
-        angle: z.number(),
-        vx: z.number(),
-        vy: z.number(),
-        omega: z.number(),
+        x: num,
+        y: num,
+        angle: num,
+        vx: num,
+        vy: num,
+        omega: num,
         massMode: z.enum(['density', 'explicit']),
-        density: z.number().min(PROPERTY_DESCRIPTORS.density.min!).max(PROPERTY_DESCRIPTORS.density.max!),
-        mass: z.number().min(PROPERTY_DESCRIPTORS.mass.min!).max(PROPERTY_DESCRIPTORS.mass.max!).optional(),
-        friction: z.number().min(0).max(PROPERTY_DESCRIPTORS.friction.max!),
-        restitution: z.number().min(0).max(PROPERTY_DESCRIPTORS.restitution.max!),
+        density: num.min(PROPERTY_DESCRIPTORS.density.min!).max(PROPERTY_DESCRIPTORS.density.max!),
+        mass: num.min(PROPERTY_DESCRIPTORS.mass.min!).max(PROPERTY_DESCRIPTORS.mass.max!).optional(),
+        friction: num.min(0).max(PROPERTY_DESCRIPTORS.friction.max!),
+        restitution: num.min(0).max(PROPERTY_DESCRIPTORS.restitution.max!),
         materialId: z.string(),
-        gravityScale: z.number().min(PROPERTY_DESCRIPTORS.gravityScale.min!).max(PROPERTY_DESCRIPTORS.gravityScale.max!),
-        linearDamping: z.number().min(0).max(PROPERTY_DESCRIPTORS.linearDamping.max!),
-        angularDamping: z.number().min(0).max(PROPERTY_DESCRIPTORS.angularDamping.max!),
+        gravityScale: num.min(PROPERTY_DESCRIPTORS.gravityScale.min!).max(PROPERTY_DESCRIPTORS.gravityScale.max!),
+        linearDamping: num.min(0).max(PROPERTY_DESCRIPTORS.linearDamping.max!),
+        angularDamping: num.min(0).max(PROPERTY_DESCRIPTORS.angularDamping.max!),
         ccd: z.boolean(),
         locked: z.boolean(),
         lockRotation: z.boolean(),
         shape,
-        color: z.number().optional(),
+        color: z.number().int().optional(),
       }),
     ),
     joints: z.array(
@@ -68,11 +71,11 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         bodyB: z.string(),
         anchorA: vec2,
         anchorB: vec2,
-        restLength: z.number().min(0).max(PROPERTY_DESCRIPTORS.restLength.max!).optional(),
-        stiffness: z.number().min(0).max(PROPERTY_DESCRIPTORS.stiffness.max!).optional(),
-        damping: z.number().min(0).max(PROPERTY_DESCRIPTORS.damping.max!).optional(),
-        frameA: z.number().optional(),
-        frameB: z.number().optional(),
+        restLength: num.min(0).max(PROPERTY_DESCRIPTORS.restLength.max!).optional(),
+        stiffness: num.min(0).max(PROPERTY_DESCRIPTORS.stiffness.max!).optional(),
+        damping: num.min(0).max(PROPERTY_DESCRIPTORS.damping.max!).optional(),
+        frameA: num.optional(),
+        frameB: num.optional(),
       }),
     ),
     fluidRegions: z.array(
@@ -80,14 +83,14 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         id: z.string(),
         name: z.string(),
         polygon: z.array(vec2).min(3),
-        restSurfaceY: z.number(),
+        restSurfaceY: num,
         materialId: z.string(),
       }),
     ),
     camera: z.object({
-      x: z.number(),
-      y: z.number(),
-      pixelsPerMeter: z.number().positive(),
+      x: num,
+      y: num,
+      pixelsPerMeter: num.positive(),
     }),
     visualization: z.object({
       velocity: z.boolean(),
@@ -176,6 +179,14 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         })
       }
       fluidIds.add(f.id)
+
+      if (!isConvex(f.polygon)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `El polígono de la región de fluido '${f.name}' debe ser convexo para el cálculo hidrostático`,
+          path: ['fluidRegions', i, 'polygon'],
+        })
+      }
 
       if (!FLUID_MATERIALS.some((m) => m.id === f.materialId)) {
         ctx.addIssue({

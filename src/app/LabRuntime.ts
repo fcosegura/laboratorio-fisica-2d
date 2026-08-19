@@ -1,5 +1,5 @@
 import { IdFactory } from '../core/ids.ts'
-import { aabbFromBox, aabbFromCircle, aabbFromPoints, emptyAABB, intersectsAABB, type AABB } from '../core/math/aabb.ts'
+import { aabbFromShape, intersectsAABB, type AABB } from '../core/math/aabb.ts'
 import { dist } from '../core/math/vec2.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import { inverseTransformPoint, transformPoint, type Transform } from '../core/math/transform.ts'
@@ -77,9 +77,18 @@ export class LabRuntime {
     const session = ++this.session
     this.canvas = canvas
     await this.engine.init()
-    if (session !== this.session) return
+    if (session !== this.session) {
+      this.engine.world?.destroy()
+      this.engine.world = null
+      return
+    }
     await this.renderer.init(canvas)
-    if (session !== this.session) return
+    if (session !== this.session) {
+      this.renderer.destroy()
+      this.engine.world?.destroy()
+      this.engine.world = null
+      return
+    }
     this.bind(canvas)
     this.resize()
     this.lastT = performance.now()
@@ -211,6 +220,7 @@ export class LabRuntime {
           ppm: this.camera.pixelsPerMeter,
         }
         this.state = { kind: 'idle' }
+        this.engine.persistentForces = []
         return
       }
       this.onDown(e, world, screen)
@@ -312,12 +322,8 @@ export class LabRuntime {
   }
 
   private bodyBounds(b: SceneBody): AABB {
-    if (b.shape.kind === 'circle') return aabbFromCircle(b.x, b.y, b.shape.radius)
-    if (b.shape.kind === 'box') return aabbFromBox({ x: b.x, y: b.y, angle: b.angle }, b.shape.hx, b.shape.hy)
-    if (b.shape.kind === 'convex') {
-      return aabbFromPoints(b.shape.vertices.map((p) => ({ x: p.x + b.x, y: p.y + b.y })))
-    }
-    return emptyAABB()
+    const pose = this.poseOf(b.id)
+    return aabbFromShape(b.shape, pose)
   }
 
   private onUp(_e: PointerEvent, world: Vec2): void {
@@ -371,8 +377,8 @@ export class LabRuntime {
           this.history.apply(
             new UpdateBodyCommand(
               s.bodyId,
-              { x: finalX, y: finalY, vx: 0, vy: 0, omega: 0 },
-              { x: s.orig.x, y: s.orig.y, vx: 0, vy: 0, omega: 0 },
+              { x: finalX, y: finalY, vx: s.orig.vx, vy: s.orig.vy, omega: s.orig.omega },
+              { x: s.orig.x, y: s.orig.y, vx: s.orig.vx, vy: s.orig.vy, omega: s.orig.omega },
             ),
           )
         }
@@ -557,9 +563,18 @@ export class LabRuntime {
       'locked',
     ]
     if (rebuildKeys.some((k) => k in patch)) {
+      const live = this.engine.world.getBody(id)
       this.engine.world.removeBody(id)
-      this.engine.world.addBody(bodyToDesc(body))
+      const desc = bodyToDesc(body)
+      if (live) {
+        desc.translation = { x: live.x, y: live.y }
+        desc.rotation = live.angle
+        desc.linvel = { x: live.vx, y: live.vy }
+        desc.angvel = live.omega
+      }
+      this.engine.world.addBody(desc)
       reattachJoints(this.engine.world, this.engine.doc, id)
+      this.engine.syncBodies()
     } else {
       if (patch.x !== undefined || patch.y !== undefined || patch.angle !== undefined) {
         this.engine.world.setTransform(id, body.x, body.y, body.angle)
@@ -569,6 +584,7 @@ export class LabRuntime {
       }
       if (patch.gravityScale !== undefined) this.engine.world.setGravityScale(id, body.gravityScale)
       if (patch.type !== undefined) this.engine.world.setBodyType(id, body.type)
+      this.engine.syncBodies()
     }
     this.pushUi()
   }
@@ -697,6 +713,7 @@ export class LabRuntime {
   exportJson(): string {
     this.engine.doc.camera = { ...this.camera }
     this.engine.doc.visualization = this.store?.getState().viz ?? this.engine.doc.visualization
+    this.engine.doc.world.gravityPreset = this.store?.getState().gravityPreset ?? this.engine.doc.world.gravityPreset
     return serializeDocument(this.engine.doc)
   }
 
@@ -722,9 +739,10 @@ export class LabRuntime {
     if (e.key === '.') this.engine.stepOnce()
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault()
-      if (e.shiftKey) this.history.redo()
-      else this.history.undo()
-      void this.engine.reload(this.engine.doc)
+      const changed = e.shiftKey ? this.history.redo() : this.history.undo()
+      if (changed) {
+        void this.engine.reload(this.engine.doc).then(() => this.pushUi())
+      }
     }
     if (e.key === 'Delete' || e.key === 'Backspace') this.deleteSelected()
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
@@ -747,8 +765,12 @@ export class LabRuntime {
     if (t && !e.ctrlKey && !e.metaKey) {
       store.setState({ tool: t })
       if (t !== 'joint' && this.state.kind === 'joining') this.state = { kind: 'idle' }
+      this.engine.persistentForces = []
     }
-    if (e.key === 'Escape') this.state = { kind: 'idle' }
+    if (e.key === 'Escape') {
+      this.state = { kind: 'idle' }
+      this.engine.persistentForces = []
+    }
     if (e.key === 'Enter' && this.state.kind === 'creating' && this.state.tool === 'polygon') {
       const { start, current, points } = this.state
       this.state = { kind: 'idle' }

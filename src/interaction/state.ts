@@ -6,8 +6,13 @@ export type InteractionState =
   | { kind: 'idle' }
   | { kind: 'hovering'; bodyId: BodyId }
   | { kind: 'selecting'; start: Vec2; current: Vec2 }
-  | { kind: 'dragging'; bodyId: BodyId; local: Vec2; startWorld: Vec2; orig: { x: number; y: number; angle: number } }
-  | { kind: 'rotating'; bodyId: BodyId; startAngle: number; origAngle: number }
+  | {
+      kind: 'dragging'
+      bodyId: BodyId
+      local: Vec2
+      startWorld: Vec2
+      orig: { x: number; y: number; angle: number; vx: number; vy: number; omega: number }
+    }
   | {
       kind: 'creating'
       tool: Tool

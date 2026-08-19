@@ -5,7 +5,7 @@ import { RapierWorld } from '../physics/adapters/rapier/RapierWorld.ts'
 import { loadRapier } from '../physics/adapters/rapier/loadRapier.ts'
 import type { BodySnapshot, PhysicsContact, PhysicsWorld } from '../physics/ports.ts'
 import { buildWorld } from '../scene/builder.ts'
-import { cloneDocument, type SceneBody, type SceneDocument } from '../scene/document.ts'
+import { cloneDocument, type GravityPreset, type SceneBody, type SceneDocument } from '../scene/document.ts'
 import { pickBody } from '../scene/picking.ts'
 import { AnalyticFluidSolver } from '../fluids/analytic/AnalyticFluid.ts'
 import { Clock } from './clock.ts'
@@ -111,8 +111,9 @@ export class SimulationEngine {
     this.doc.world.timeScale = s
   }
 
-  setGravity(g: Vec2): void {
+  setGravity(g: Vec2, preset: GravityPreset = 'custom'): void {
     this.doc.world.gravity = { x: g.x, y: g.y }
+    this.doc.world.gravityPreset = preset
     this.world?.setGravity(g)
   }
 

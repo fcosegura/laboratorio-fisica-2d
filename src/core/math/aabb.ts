@@ -89,3 +89,48 @@ export function intersectsAABB(a: AABB, b: AABB): boolean {
   return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY
 }
 
+export function aabbFromShape(
+  shape: { kind: string; [key: string]: any },
+  t: Transform,
+): AABB {
+  const c = Math.cos(t.angle)
+  const s = Math.sin(t.angle)
+  const transformPoint = (p: Vec2): Vec2 => ({
+    x: t.x + p.x * c - p.y * s,
+    y: t.y + p.x * s + p.y * c,
+  })
+
+  switch (shape.kind) {
+    case 'circle':
+      return aabbFromCircle(t.x, t.y, shape.radius)
+    case 'box':
+      return aabbFromBox(t, shape.hx, shape.hy)
+    case 'capsule': {
+      const top = transformPoint({ x: 0, y: shape.halfHeight })
+      const bot = transformPoint({ x: 0, y: -shape.halfHeight })
+      const box = aabbFromPoints([top, bot])
+      return expandAABB(box, shape.radius)
+    }
+    case 'convex':
+    case 'polyline': {
+      const points = (shape.vertices as Vec2[]).map(transformPoint)
+      return aabbFromPoints(points)
+    }
+    case 'segment': {
+      const a = transformPoint(shape.a as Vec2)
+      const b = transformPoint(shape.b as Vec2)
+      return aabbFromPoints([a, b])
+    }
+    case 'compound': {
+      const box = emptyAABB()
+      for (const part of shape.parts ?? []) {
+        includeAABB(box, aabbFromShape(part, t))
+      }
+      return box
+    }
+    default:
+      return emptyAABB()
+  }
+}
+
+

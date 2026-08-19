@@ -38,7 +38,9 @@ export function reduceDown(
   if (tool === 'select') {
     if (hit) {
       const body = bodyOf(hit)
-      const orig = body ? { x: body.x, y: body.y, angle: body.angle } : { x: 0, y: 0, angle: 0 }
+      const orig = body
+        ? { x: body.x, y: body.y, angle: body.angle, vx: body.vx, vy: body.vy, omega: body.omega }
+        : { x: 0, y: 0, angle: 0, vx: 0, vy: 0, omega: 0 }
       return {
         state: {
           kind: 'dragging',

@@ -13,7 +13,8 @@ export function TimeBar() {
 
   const setPreset = (p: GravityPreset) => {
     useLabStore.setState({ gravityPreset: p })
-    if (p !== 'custom') lab.engine.setGravity(GRAVITY_PRESETS[p])
+    if (p !== 'custom') lab.engine.setGravity(GRAVITY_PRESETS[p], p)
+    else lab.engine.doc.world.gravityPreset = 'custom'
   }
 
   return (

@@ -6,7 +6,7 @@ import {
   TextStyle,
 } from 'pixi.js'
 import type { Camera } from '../camera/coords.ts'
-import { aabbFromBox, aabbFromCircle, aabbFromPoints, emptyAABB, includeAABB, type AABB } from '../core/math/aabb.ts'
+import { aabbFromPoints, aabbFromShape, emptyAABB, includeAABB, type AABB } from '../core/math/aabb.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import { FORCE_ACCEL_PER_METER, forceAnchorWorld, IMPULSE_VELOCITY_PER_METER } from '../interaction/force.ts'
 import { getFluid, getSolid } from '../materials/catalog.ts'
@@ -143,9 +143,7 @@ export class PixiRenderer {
   sceneBounds(doc: SceneDocument): AABB {
     const box = emptyAABB()
     for (const b of doc.bodies) {
-      if (b.shape.kind === 'circle') includeAABB(box, aabbFromCircle(b.x, b.y, b.shape.radius))
-      else if (b.shape.kind === 'box') includeAABB(box, aabbFromBox({ x: b.x, y: b.y, angle: b.angle }, b.shape.hx, b.shape.hy))
-      else if (b.shape.kind === 'convex') includeAABB(box, aabbFromPoints(b.shape.vertices.map((p) => ({ x: p.x + b.x, y: p.y + b.y }))))
+      includeAABB(box, aabbFromShape(b.shape, { x: b.x, y: b.y, angle: b.angle }))
     }
     for (const f of doc.fluidRegions) includeAABB(box, aabbFromPoints(f.polygon))
     return box

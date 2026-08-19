@@ -124,4 +124,38 @@ describe('scene commands & index preservation', () => {
     expect(doc.bodies.find((b) => b.id === 'b1')).toBeUndefined()
     expect(doc.bodies.find((b) => b.id === 'b2')).toBeUndefined()
   })
+
+  it('restores original velocities when undoing a drag operation', () => {
+    let doc: SceneDocument = emptyScene()
+    const history = new History(
+      () => doc,
+      (d) => {
+        doc = d
+      },
+    )
+
+    const initial = sampleBody('b1', 5)
+    initial.vx = 2.5
+    initial.vy = -1.0
+    initial.omega = 0.5
+    history.apply(new AddBodyCommand(initial))
+
+    // Drag ended: updated pos, set vel
+    history.apply(
+      new UpdateBodyCommand(
+        'b1',
+        { x: 15, y: 10, vx: 2.5, vy: -1.0, omega: 0.5 },
+        { x: 5, y: 0, vx: 2.5, vy: -1.0, omega: 0.5 },
+      ),
+    )
+
+    expect(doc.bodies.find((b) => b.id === 'b1')!.x).toBe(15)
+
+    history.undo()
+    const restored = doc.bodies.find((b) => b.id === 'b1')!
+    expect(restored.x).toBe(5)
+    expect(restored.vx).toBe(2.5)
+    expect(restored.vy).toBe(-1.0)
+    expect(restored.omega).toBe(0.5)
+  })
 })

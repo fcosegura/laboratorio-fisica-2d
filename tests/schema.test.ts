@@ -138,6 +138,33 @@ describe('schema cross-validation & migration', () => {
     expect(() => parseDocument(json)).toThrow()
   })
 
+  it('rejects non-finite numbers (Infinity/NaN)', () => {
+    const doc = emptyScene()
+    doc.bodies[0]!.x = Infinity
+    const json = JSON.stringify(doc)
+    expect(() => parseDocument(json)).toThrow()
+  })
+
+  it('rejects non-convex fluid region polygons', () => {
+    const doc = emptyScene()
+    doc.fluidRegions.push({
+      id: 'fluid:l-shape',
+      name: 'L Fluid',
+      polygon: [
+        { x: 0, y: 0 },
+        { x: 2, y: 0 },
+        { x: 2, y: 1 },
+        { x: 1, y: 1 },
+        { x: 1, y: 2 },
+        { x: 0, y: 2 },
+      ],
+      restSurfaceY: 1,
+      materialId: 'water',
+    })
+    const json = JSON.stringify(doc)
+    expect(() => parseDocument(json)).toThrow(/debe ser convexo/)
+  })
+
   it('migrates unversioned documents to schemaVersion 1', () => {
     const raw = emptyScene() as unknown as Record<string, unknown>
     delete raw.schemaVersion

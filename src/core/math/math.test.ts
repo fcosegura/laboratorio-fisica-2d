@@ -64,3 +64,30 @@ describe('polygon', () => {
     expect(area).toBeCloseTo(3, 5)
   })
 })
+
+describe('aabbFromShape', () => {
+  it('computes bounding box for circle and rotated box', async () => {
+    const { aabbFromShape } = await import('./aabb.ts')
+    const circleBox = aabbFromShape({ kind: 'circle', radius: 2 }, { x: 5, y: 5, angle: 0 })
+    expect(circleBox).toEqual({ minX: 3, minY: 3, maxX: 7, maxY: 7 })
+
+    const boxBox = aabbFromShape({ kind: 'box', hx: 1, hy: 2 }, { x: 0, y: 0, angle: Math.PI / 2 })
+    expect(boxBox.minX).toBeCloseTo(-2, 4)
+    expect(boxBox.maxX).toBeCloseTo(2, 4)
+    expect(boxBox.minY).toBeCloseTo(-1, 4)
+    expect(boxBox.maxY).toBeCloseTo(1, 4)
+  })
+
+  it('computes bounding box for capsule, polyline and segment', async () => {
+    const { aabbFromShape } = await import('./aabb.ts')
+    const capBox = aabbFromShape({ kind: 'capsule', halfHeight: 2, radius: 0.5 }, { x: 0, y: 0, angle: 0 })
+    expect(capBox.minX).toBeCloseTo(-0.5, 4)
+    expect(capBox.maxX).toBeCloseTo(0.5, 4)
+    expect(capBox.minY).toBeCloseTo(-2.5, 4)
+    expect(capBox.maxY).toBeCloseTo(2.5, 4)
+
+    const segBox = aabbFromShape({ kind: 'segment', a: { x: -1, y: 0 }, b: { x: 3, y: 4 } }, { x: 0, y: 0, angle: 0 })
+    expect(segBox).toEqual({ minX: -1, minY: 0, maxX: 3, maxY: 4 })
+  })
+})
+
