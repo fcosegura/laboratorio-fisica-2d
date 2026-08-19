@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "name": "Fixture v1",
+    "description": "Documento mínimo para migraciones futuras"
+  },
+  "world": {
+    "gravity": { "x": 0, "y": -9.81 },
+    "gravityPreset": "earth",
+    "timeScale": 1
+  },
+  "bodies": [],
+  "joints": [],
+  "fluidRegions": [],
+  "camera": { "x": 0, "y": 2, "pixelsPerMeter": 64 },
+  "visualization": {
+    "velocity": false,
+    "force": false,
+    "gravity": false,
+    "contacts": true,
+    "colliders": false,
+    "com": false,
+    "trajectories": false,
+    "fluidParticles": false
+  }
+}

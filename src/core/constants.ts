@@ -1,0 +1,9 @@
+export const PHYSICS_DT = 1 / 60
+export const MAX_STEPS_PER_FRAME = 5
+export const MAX_FRAME_DT = 0.25
+export const DEFAULT_PIXELS_PER_METER = 64
+export const MIN_PIXELS_PER_METER = 4
+export const MAX_PIXELS_PER_METER = 2048
+export const EARTH_G = 9.81
+export const DEFAULT_RECORDER_SECONDS = 60
+export const DEFAULT_RECORDER_HZ = 60
