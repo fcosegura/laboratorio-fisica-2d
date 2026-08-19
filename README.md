@@ -55,6 +55,11 @@ La UI (React) no calcula física. El bucle vive en `LabRuntime`:
 
 Reglas de dependencia comprobadas en `tests/architecture.test.ts`.
 
+## Estado del código
+
+- [Revisión estática](docs/revision-estatica.md): defectos conocidos con archivo, línea y severidad.
+- [Plan de mejora](docs/plan-de-mejora.md): fases ordenadas por dependencia técnica.
+
 ## Licencia
 
 MIT
