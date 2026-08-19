@@ -1,7 +1,29 @@
 import { create } from 'zustand'
-import { DEFAULT_VIZ, type JointKindUi, type SceneBody, type SceneJoint, type VizLayers } from '../scene/document.ts'
+import {
+  DEFAULT_VIZ,
+  type JointKindUi,
+  type SceneBody,
+  type SceneJoint,
+  type VizLayers,
+} from '../scene/document.ts'
 import { Tool, type Tool as ToolId } from '../interaction/tools.ts'
 import type { GravityPreset } from '../scene/document.ts'
+import { CHANNEL_LABELS, type RecorderChannel } from '../sim/recorder.ts'
+
+export { CHANNEL_LABELS }
+export type { RecorderChannel }
+
+export type GraphChannel = 'x' | 'y' | 'vx' | 'vy' | 'speed' | 'energy' | 'kinetic'
+
+export const GRAPH_CHANNELS: readonly GraphChannel[] = [
+  'y',
+  'x',
+  'vx',
+  'vy',
+  'speed',
+  'energy',
+  'kinetic',
+]
 
 export type LiveBody = {
   x: number
@@ -12,6 +34,8 @@ export type LiveBody = {
   omega: number
   mass: number
 }
+
+export type JointUi = SceneJoint & { otherName: string }
 
 export type Timings = {
   physics: number
@@ -32,9 +56,10 @@ export type LabUiState = {
   simTime: number
   selectedId: string | null
   selectedBody: SceneBody | null
-  selectedJoints: SceneJoint[]
+  selectedJoints: JointUi[]
   live: LiveBody | null
   bodyCount: number
+  fluidCount: number
   particleCount: number
   timings: Timings
   canUndo: boolean
@@ -44,7 +69,7 @@ export type LabUiState = {
   inspectorOpen: boolean
   graphsOpen: boolean
   debugHud: boolean
-  graphChannel: 'x' | 'y' | 'vx' | 'vy' | 'speed' | 'energy' | 'kinetic'
+  graphChannel: GraphChannel
 }
 
 export const useLabStore = create<LabUiState>(() => ({
@@ -60,6 +85,7 @@ export const useLabStore = create<LabUiState>(() => ({
   selectedJoints: [],
   live: null,
   bodyCount: 0,
+  fluidCount: 0,
   particleCount: 0,
   timings: { physics: 0, fluids: 0, render: 0, frame: 0, steps: 0, dropped: 0 },
   canUndo: false,

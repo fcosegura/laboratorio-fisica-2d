@@ -1,6 +1,7 @@
 import type { BodyId } from '../core/ids.ts'
 import { RingBuffer } from '../core/ringBuffer.ts'
 import { DEFAULT_RECORDER_HZ, DEFAULT_RECORDER_SECONDS } from '../core/constants.ts'
+import type { Vec2 } from '../core/math/vec2.ts'
 import type { BodySnapshot } from '../physics/ports.ts'
 
 export const RecorderChannel = {
@@ -40,6 +41,7 @@ type Track = {
   id: BodyId
   prevVx: number
   prevVy: number
+  hasPrevVel: boolean
   buffers: Record<RecorderChannel, RingBuffer>
 }
 
@@ -60,7 +62,7 @@ export class DataRecorder {
     for (const key of Object.keys(CHANNEL_LABELS) as RecorderChannel[]) {
       buffers[key] = new RingBuffer(this.capacity)
     }
-    this.tracks.set(id, { id, prevVx: 0, prevVy: 0, buffers })
+    this.tracks.set(id, { id, prevVx: 0, prevVy: 0, hasPrevVel: false, buffers })
   }
 
   unobserve(id: BodyId): void {
@@ -77,6 +79,7 @@ export class DataRecorder {
       for (const b of Object.values(t.buffers)) b.clear()
       t.prevVx = 0
       t.prevVy = 0
+      t.hasPrevVel = false
     }
     this.tick = 0
   }
@@ -85,18 +88,22 @@ export class DataRecorder {
     return [...this.tracks.keys()]
   }
 
-  sample(time: number, dt: number, gy: number, bodies: Iterable<BodySnapshot>): void {
+  /** Datum of PE is the origin: PE = −m g · r. */
+  sample(time: number, dt: number, gravity: Vec2, bodies: Iterable<BodySnapshot>): void {
     this.tick++
     if (this.tick % this.sampleEvery !== 0) return
     for (const body of bodies) {
       const track = this.tracks.get(body.id)
       if (!track) continue
-      const ax = (body.vx - track.prevVx) / dt
-      const ay = (body.vy - track.prevVy) / dt
+      const ax = track.hasPrevVel ? (body.vx - track.prevVx) / dt : 0
+      const ay = track.hasPrevVel ? (body.vy - track.prevVy) / dt : 0
       track.prevVx = body.vx
       track.prevVy = body.vy
-      const kinetic = 0.5 * body.mass * (body.vx * body.vx + body.vy * body.vy) + 0.5 * body.inertia * body.omega * body.omega
-      const potential = body.mass * Math.abs(gy) * body.y
+      track.hasPrevVel = true
+      const kinetic =
+        0.5 * body.mass * (body.vx * body.vx + body.vy * body.vy) +
+        0.5 * body.inertia * body.omega * body.omega
+      const potential = -body.mass * (gravity.x * body.x + gravity.y * body.y)
       const push = (ch: RecorderChannel, v: number) => track.buffers[ch].push(v)
       push('time', time)
       push('x', body.x)

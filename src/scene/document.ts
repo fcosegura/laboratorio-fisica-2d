@@ -2,6 +2,8 @@ import type { BodyId, FluidRegionId, MaterialId } from '../core/ids.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import type { BodyType, MassMode, PhysicsShape } from '../physics/ports.ts'
 
+export type { BodyType, MassMode } from '../physics/ports.ts'
+
 export const SCHEMA_VERSION = 1
 
 export type GravityPreset = 'earth' | 'moon' | 'mars' | 'zero' | 'custom'

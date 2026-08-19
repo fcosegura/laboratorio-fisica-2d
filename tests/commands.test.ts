@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { emptyScene, type SceneBody, type SceneDocument, type SceneFluidRegion } from '../src/scene/document.ts'
+import {
+  emptyScene,
+  type SceneBody,
+  type SceneDocument,
+  type SceneFluidRegion,
+} from '../src/scene/document.ts'
 import { History } from '../src/scene/history.ts'
 import {
   AddBodyCommand,
   BatchCommand,
   RemoveBodyCommand,
   RemoveFluidCommand,
+  SetWorldCommand,
   UpdateBodyCommand,
 } from '../src/scene/commands.ts'
 
@@ -69,9 +75,27 @@ describe('scene commands & index preservation', () => {
       },
     )
 
-    const f1: SceneFluidRegion = { id: 'f1', name: 'F1', polygon: [], restSurfaceY: 0, materialId: 'water' }
-    const f2: SceneFluidRegion = { id: 'f2', name: 'F2', polygon: [], restSurfaceY: 0, materialId: 'water' }
-    const f3: SceneFluidRegion = { id: 'f3', name: 'F3', polygon: [], restSurfaceY: 0, materialId: 'water' }
+    const f1: SceneFluidRegion = {
+      id: 'f1',
+      name: 'F1',
+      polygon: [],
+      restSurfaceY: 0,
+      materialId: 'water',
+    }
+    const f2: SceneFluidRegion = {
+      id: 'f2',
+      name: 'F2',
+      polygon: [],
+      restSurfaceY: 0,
+      materialId: 'water',
+    }
+    const f3: SceneFluidRegion = {
+      id: 'f3',
+      name: 'F3',
+      polygon: [],
+      restSurfaceY: 0,
+      materialId: 'water',
+    }
 
     doc.fluidRegions.push(f1, f2, f3)
 
@@ -157,5 +181,34 @@ describe('scene commands & index preservation', () => {
     expect(restored.vx).toBe(2.5)
     expect(restored.vy).toBe(-1.0)
     expect(restored.omega).toBe(0.5)
+  })
+
+  it('SetWorldCommand restores gravity and timeScale on undo', () => {
+    let doc: SceneDocument = emptyScene()
+    const history = new History(
+      () => doc,
+      (d) => {
+        doc = d
+      },
+    )
+
+    const prevG = { ...doc.world.gravity }
+    const prevPreset = doc.world.gravityPreset
+    const prevScale = doc.world.timeScale
+
+    history.apply(
+      new SetWorldCommand(
+        { gravity: { x: 0, y: -1.62 }, gravityPreset: 'moon', timeScale: 0.5 },
+        { gravity: prevG, gravityPreset: prevPreset, timeScale: prevScale },
+      ),
+    )
+    expect(doc.world.gravityPreset).toBe('moon')
+    expect(doc.world.gravity.y).toBeCloseTo(-1.62)
+    expect(doc.world.timeScale).toBe(0.5)
+
+    history.undo()
+    expect(doc.world.gravityPreset).toBe(prevPreset)
+    expect(doc.world.gravity).toEqual(prevG)
+    expect(doc.world.timeScale).toBe(prevScale)
   })
 })

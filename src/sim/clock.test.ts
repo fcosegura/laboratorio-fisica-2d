@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PHYSICS_DT } from '../core/constants.ts'
+import { MAX_FRAME_DT, MAX_STEPS_PER_FRAME, PHYSICS_DT } from '../core/constants.ts'
 import { Clock } from './clock.ts'
 
 describe('Clock', () => {
@@ -34,5 +34,44 @@ describe('Clock', () => {
     c.playing = false
     expect(c.advance(1)).toBe(0)
     expect(c.simTime).toBe(0)
+  })
+
+  it('caps steps per frame without zeroing remainder or reporting a dummy +1 drop', () => {
+    const c = new Clock()
+    c.playing = true
+    const added = MAX_FRAME_DT
+    const steps = c.advance(added)
+    expect(steps).toBe(MAX_STEPS_PER_FRAME)
+    expect(c.simTime).toBeCloseTo(MAX_STEPS_PER_FRAME * PHYSICS_DT, 10)
+    expect(c.accumulator).toBeLessThan(PHYSICS_DT)
+    expect(c.alpha).toBeGreaterThan(0)
+    expect(c.alpha).toBeLessThanOrEqual(1)
+    const totalPossible = Math.floor(added / PHYSICS_DT)
+    expect(c.stepsDropped).toBe(totalPossible - MAX_STEPS_PER_FRAME)
+  })
+
+  it('high timeScale saturates substeps and counts dropped time', () => {
+    const c = new Clock()
+    c.playing = true
+    c.timeScale = 5
+    const frameDt = 0.1
+    const steps = c.advance(frameDt)
+    expect(steps).toBe(MAX_STEPS_PER_FRAME)
+    const added = Math.min(frameDt, MAX_FRAME_DT) * 5
+    const totalPossible = Math.floor(added / PHYSICS_DT)
+    expect(c.stepsDropped).toBe(totalPossible - MAX_STEPS_PER_FRAME)
+    expect(c.accumulator).toBeLessThan(PHYSICS_DT)
+    expect(c.alpha).toBeGreaterThan(0)
+  })
+
+  it('a frame hitch does not rewind interpolation alpha to 0', () => {
+    const c = new Clock()
+    c.playing = true
+    expect(c.advance(PHYSICS_DT)).toBe(1)
+    expect(c.alpha).toBe(1)
+    c.advance(MAX_FRAME_DT)
+    expect(c.alpha).not.toBe(0)
+    expect(c.alpha).toBeGreaterThan(0)
+    expect(c.alpha).toBeLessThanOrEqual(1)
   })
 })

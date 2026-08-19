@@ -1,16 +1,43 @@
 import { SOLID_MATERIALS } from '../materials/catalog.ts'
+import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { TOOL_META, type Tool } from '../interaction/tools.ts'
 import { JOINT_KIND_META } from '../scene/document.ts'
 
 export function Toolbar() {
+  const lab = useLab()
   const tool = useLabStore((s) => s.tool)
   const jointKind = useLabStore((s) => s.jointKind)
   const materialId = useLabStore((s) => s.materialId)
   const viz = useLabStore((s) => s.viz)
+  const canUndo = useLabStore((s) => s.canUndo)
+  const canRedo = useLabStore((s) => s.canRedo)
 
   return (
     <aside className="flex w-16 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-line bg-panel py-2">
+      <button
+        type="button"
+        title="Deshacer (Ctrl+Z)"
+        disabled={!canUndo}
+        onClick={() => lab.undo()}
+        className={`flex h-8 w-10 items-center justify-center rounded text-sm ${
+          canUndo ? 'text-ink hover:bg-panel-2' : 'cursor-not-allowed text-muted opacity-40'
+        }`}
+      >
+        ↩
+      </button>
+      <button
+        type="button"
+        title="Rehacer (Mayús+Ctrl+Z)"
+        disabled={!canRedo}
+        onClick={() => lab.redo()}
+        className={`flex h-8 w-10 items-center justify-center rounded text-sm ${
+          canRedo ? 'text-ink hover:bg-panel-2' : 'cursor-not-allowed text-muted opacity-40'
+        }`}
+      >
+        ↪
+      </button>
+      <div className="my-1 h-px w-8 bg-line" />
       {TOOL_META.map((t) => (
         <button
           key={t.id}
@@ -18,7 +45,9 @@ export function Toolbar() {
           title={`${t.label} (${t.hint})`}
           onClick={() => useLabStore.setState({ tool: t.id })}
           className={`flex h-10 w-10 items-center justify-center rounded-lg text-lg ${
-            tool === t.id ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-panel-2 hover:text-ink'
+            tool === t.id
+              ? 'bg-accent/20 text-accent'
+              : 'text-muted hover:bg-panel-2 hover:text-ink'
           }`}
         >
           <ToolIcon id={t.id} />
@@ -34,7 +63,9 @@ export function Toolbar() {
               title={`${k.label} · ${k.hint}`}
               onClick={() => useLabStore.setState({ jointKind: k.id })}
               className={`flex h-7 w-10 items-center justify-center rounded text-[10px] font-semibold ${
-                jointKind === k.id ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-panel-2 hover:text-ink'
+                jointKind === k.id
+                  ? 'bg-accent/20 text-accent'
+                  : 'text-muted hover:bg-panel-2 hover:text-ink'
               }`}
             >
               {k.chip}

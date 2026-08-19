@@ -17,7 +17,7 @@ React (`src/ui`) no calcula física. Rapier solo en `src/physics/adapters/rapier
 
 ## Imports
 
-`tests/architecture.test.ts` es la fuente de verdad: `core` no importa otras capas; `physics` no importa render/ui/sim/pixi/react; `sim` no importa pixi/react/render; `render` no importa rapier/react; `ui` no importa rapier/pixi.
+`tests/architecture.test.ts` es la fuente de verdad: tabla declarativa capa → prohibiciones para las 12 carpetas de `src/`. Falla si aparece una carpeta nueva sin regla. `ui` no importa rapier, pixi, physics, sim, render ni fluids.
 
 ## Mundo
 

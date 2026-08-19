@@ -5,6 +5,9 @@ import type { SceneBody } from '../scene/document.ts'
 import type { InteractionState } from './state.ts'
 import type { Tool } from './tools.ts'
 
+/** Live kinematic pose (snapshot / engine.curr), not authorship in the document. */
+export type KinematicPose = Transform & { vx: number; vy: number; omega: number }
+
 export type DownEventContext = {
   tool: Tool
   world: Vec2
@@ -15,7 +18,7 @@ export type DownEventContext = {
   button: number
   spaceHeld?: boolean
   camera: { x: number; y: number }
-  poseOf: (id: BodyId) => Transform
+  poseOf: (id: BodyId) => KinematicPose
   bodyOf: (id: BodyId) => SceneBody | undefined
 }
 
@@ -23,7 +26,7 @@ export function reduceDown(
   state: InteractionState,
   ctx: DownEventContext,
 ): { state: InteractionState; selected?: BodyId[]; pushUi?: boolean; ensurePlaying?: boolean } {
-  const { tool, world, screen, hit, hitDynamic, shiftKey, button, spaceHeld, camera, poseOf, bodyOf } = ctx
+  const { tool, world, screen, hit, hitDynamic, shiftKey, button, spaceHeld, camera, poseOf } = ctx
 
   if (state.kind === 'joining' && tool !== 'joint') {
     state = { kind: 'idle' }
@@ -37,10 +40,15 @@ export function reduceDown(
 
   if (tool === 'select') {
     if (hit) {
-      const body = bodyOf(hit)
-      const orig = body
-        ? { x: body.x, y: body.y, angle: body.angle, vx: body.vx, vy: body.vy, omega: body.omega }
-        : { x: 0, y: 0, angle: 0, vx: 0, vy: 0, omega: 0 }
+      const pose = poseOf(hit)
+      const orig = {
+        x: pose.x,
+        y: pose.y,
+        angle: pose.angle,
+        vx: pose.vx,
+        vy: pose.vy,
+        omega: pose.omega,
+      }
       return {
         state: {
           kind: 'dragging',
@@ -124,11 +132,14 @@ export function reduceDown(
   return { state }
 }
 
-export function reduceMove(
-  state: InteractionState,
-  world: Vec2,
-): InteractionState {
-  if (state.kind === 'creating' || state.kind === 'applyingForce' || state.kind === 'measuring' || state.kind === 'selecting' || state.kind === 'joining') {
+export function reduceMove(state: InteractionState, world: Vec2): InteractionState {
+  if (
+    state.kind === 'creating' ||
+    state.kind === 'applyingForce' ||
+    state.kind === 'measuring' ||
+    state.kind === 'selecting' ||
+    state.kind === 'joining'
+  ) {
     return { ...state, current: world }
   }
   return state

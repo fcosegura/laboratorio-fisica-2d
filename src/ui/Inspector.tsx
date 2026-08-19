@@ -2,10 +2,18 @@ import { useState } from 'react'
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { SOLID_MATERIALS } from '../materials/catalog.ts'
-import { JOINT_KIND_META, type SceneJoint } from '../scene/document.ts'
+import {
+  JOINT_KIND_META,
+  type BodyType,
+  type MassMode,
+  type SceneJoint,
+} from '../scene/document.ts'
 import { DEFAULT_SPRING_DAMPING, DEFAULT_SPRING_STIFFNESS } from '../scene/joints.ts'
-import { parseAndClamp, PROPERTY_DESCRIPTORS, type PropertyDescriptor } from '../scene/properties.ts'
-import type { BodyType, MassMode } from '../physics/ports.ts'
+import {
+  parseAndClamp,
+  PROPERTY_DESCRIPTORS,
+  type PropertyDescriptor,
+} from '../scene/properties.ts'
 
 export function Inspector() {
   const lab = useLab()
@@ -13,6 +21,7 @@ export function Inspector() {
   const joints = useLabStore((s) => s.selectedJoints)
   const live = useLabStore((s) => s.live)
   const open = useLabStore((s) => s.inspectorOpen)
+  const playing = useLabStore((s) => s.playing)
 
   if (!open) return null
 
@@ -27,6 +36,12 @@ export function Inspector() {
             value={body.name}
             onChange={(name) => lab.commitPatch(body.id, { name })}
           />
+          {playing && (
+            <p className="text-[11px] text-muted">
+              Pose y velocidad confirman las condiciones iniciales. El cuerpo vivo solo cambia el
+              campo que editas.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <Num
               label="x (m)"
@@ -130,6 +145,11 @@ export function Inspector() {
               descriptor={PROPERTY_DESCRIPTORS.restitution}
               onChange={(v) => lab.commitPatch(body.id, { restitution: v })}
             />
+            {body.restitution > 1 && (
+              <p className="col-span-2 text-[11px] text-muted">
+                Restitución &gt; 1 inyecta energía en cada choque.
+              </p>
+            )}
             <Num
               label="vx (m/s)"
               value={live?.vx ?? body.vx}
@@ -201,18 +221,28 @@ export function Inspector() {
   )
 }
 
-function JointCard({ joint, bodyId }: { joint: SceneJoint; bodyId: string }) {
+function JointCard({
+  joint,
+  bodyId,
+}: {
+  joint: SceneJoint & { otherName?: string }
+  bodyId: string
+}) {
   const lab = useLab()
-  const otherId = joint.bodyA === bodyId ? joint.bodyB : joint.bodyA
-  const other = lab.engine.doc.bodies.find((b) => b.id === otherId)
-  const kindLabel = JOINT_KIND_META.find((k) => k.id === (joint.kind === 'distance' ? 'rope' : joint.kind))?.label ?? joint.kind
+  const otherName = joint.otherName
+  const kindLabel =
+    JOINT_KIND_META.find((k) => k.id === (joint.kind === 'distance' ? 'rope' : joint.kind))
+      ?.label ?? joint.kind
   const stretchy = joint.kind === 'spring' || joint.kind === 'rope' || joint.kind === 'distance'
   return (
     <div className="rounded-md border border-line bg-panel-2 p-2">
       <div className="mb-1 flex items-center justify-between gap-2">
         <div className="text-xs">
           <span className="font-medium">{kindLabel}</span>
-          <span className="text-muted"> · {other?.name ?? otherId}</span>
+          <span className="text-muted">
+            {' '}
+            · {otherName ?? (joint.bodyA === bodyId ? joint.bodyB : joint.bodyA)}
+          </span>
         </div>
         <button
           type="button"
@@ -313,7 +343,8 @@ function Num({
 }) {
   const [localText, setLocalText] = useState<string | null>(null)
 
-  const displayValue = localText !== null ? localText : Number.isFinite(value) ? String(Number(value.toFixed(4))) : '0'
+  const displayValue =
+    localText !== null ? localText : Number.isFinite(value) ? String(Number(value.toFixed(4))) : '0'
 
   const commit = () => {
     if (localText === null) return
@@ -331,7 +362,9 @@ function Num({
         type="text"
         inputMode="decimal"
         value={displayValue}
-        onFocus={() => setLocalText(Number.isFinite(value) ? String(Number(value.toFixed(4))) : '0')}
+        onFocus={() =>
+          setLocalText(Number.isFinite(value) ? String(Number(value.toFixed(4))) : '0')
+        }
         onChange={(e) => setLocalText(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -354,4 +387,3 @@ function Num({
     </Field>
   )
 }
-

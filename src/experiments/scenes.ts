@@ -92,10 +92,13 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'freefall',
     title: 'Caída libre',
     build: () => {
-      const doc = base('Caída libre', 'Una bola de madera cae desde 5 m. Observa y = ½ g t².')
+      const doc = base(
+        'Caída libre',
+        'Una bola cae desde 5 m sin amortiguación. Observa y = ½ g t².',
+      )
       doc.bodies = [
         box('body:ground', 'Suelo', 0, -0.25, 6, 0.25, 'stone', { type: 'fixed' }),
-        ball('body:ball', 'Bola', 0, 5, 0.3, 'wood'),
+        ball('body:ball', 'Bola', 0, 5, 0.3, 'wood', { linearDamping: 0, angularDamping: 0 }),
       ]
       doc.camera = { x: 0, y: 2.4, pixelsPerMeter: 70 }
       doc.visualization.velocity = true
@@ -106,10 +109,15 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'projectile',
     title: 'Tiro parabólico',
     build: () => {
-      const doc = base('Tiro parabólico', 'Velocidad inicial 8 m/s a 45°.')
+      const doc = base('Tiro parabólico', 'Velocidad inicial 8 m/s a 45°, sin amortiguación.')
       doc.bodies = [
         box('body:ground', 'Suelo', 4, -0.25, 10, 0.25, 'stone', { type: 'fixed' }),
-        ball('body:ball', 'Proyectil', 0, 0.4, 0.25, 'plastic', { vx: 8 * Math.cos(Math.PI / 4), vy: 8 * Math.sin(Math.PI / 4) }),
+        ball('body:ball', 'Proyectil', 0, 0.4, 0.25, 'plastic', {
+          vx: 8 * Math.cos(Math.PI / 4),
+          vy: 8 * Math.sin(Math.PI / 4),
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
       ]
       doc.camera = { x: 4, y: 2, pixelsPerMeter: 48 }
       doc.visualization.trajectories = true
@@ -121,12 +129,24 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'collision',
     title: 'Colisiones',
     build: () => {
-      const doc = base('Colisiones', 'Dos bolas de goma: una en reposo, otra con 4 m/s.')
+      const doc = base(
+        'Colisiones',
+        'Dos bolas de goma sin amortiguación: una en reposo, otra con 4 m/s.',
+      )
       doc.world.gravity = { ...GRAVITY_PRESETS.zero }
       doc.world.gravityPreset = 'zero'
       doc.bodies = [
-        ball('body:a', 'Incidente', -2, 2, 0.4, 'rubber', { vx: 4, gravityScale: 0 }),
-        ball('body:b', 'Blanco', 1, 2, 0.4, 'rubber', { gravityScale: 0 }),
+        ball('body:a', 'Incidente', -2, 2, 0.4, 'rubber', {
+          vx: 4,
+          gravityScale: 0,
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
+        ball('body:b', 'Blanco', 1, 2, 0.4, 'rubber', {
+          gravityScale: 0,
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
       ]
       doc.camera = { x: 0, y: 2, pixelsPerMeter: 64 }
       return doc
@@ -151,7 +171,10 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'pendulum',
     title: 'Péndulo',
     build: () => {
-      const doc = base('Péndulo', 'Una masa unida a un anclaje fijo con una bisagra (joint revolute).')
+      const doc = base(
+        'Péndulo',
+        'Una masa unida a un anclaje fijo con una bisagra (joint revolute).',
+      )
       doc.bodies = [
         box('body:anchor', 'Anclaje', 0, 4, 0.15, 0.15, 'metal', { type: 'fixed' }),
         ball('body:bob', 'Masa', 1.6, 3.2, 0.28, 'metal', { restitution: 0 }),
@@ -174,7 +197,10 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'buoyancy',
     title: 'Flotación',
     build: () => {
-      const doc = base('Flotación', 'Madera, plástico y piedra en agua. Arquímedes: la fracción sumergida ≈ ρ_cuerpo / ρ_agua.')
+      const doc = base(
+        'Flotación',
+        'Empuje 2D con superficie plana (sin oleaje). Arquímedes: la fracción sumergida ≈ ρ_cuerpo / ρ_agua.',
+      )
       doc.bodies = [
         box('body:ground', 'Suelo', 0, -0.2, 5, 0.2, 'stone', { type: 'fixed' }),
         box('body:left', 'Pared izq.', -4.8, 1.5, 0.15, 1.7, 'stone', { type: 'fixed' }),
@@ -207,4 +233,3 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
 export function experimentById(id: string): SceneDocument | null {
   return EXPERIMENTS.find((e) => e.id === id)?.build() ?? null
 }
-

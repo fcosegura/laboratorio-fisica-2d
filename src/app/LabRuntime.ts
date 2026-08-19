@@ -2,20 +2,15 @@ import { IdFactory } from '../core/ids.ts'
 import { aabbFromShape, intersectsAABB, type AABB } from '../core/math/aabb.ts'
 import { dist } from '../core/math/vec2.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
-import { inverseTransformPoint, transformPoint, type Transform } from '../core/math/transform.ts'
+import { inverseTransformPoint, transformPoint } from '../core/math/transform.ts'
 import { dragToForce, dragToImpulse, forceAnchorWorld } from '../interaction/force.ts'
 import { getSolid } from '../materials/catalog.ts'
-import {
-  createCamera,
-  screenToWorld,
-  zoomAt,
-  zoomToFit,
-  type Camera,
-} from '../camera/coords.ts'
+import { createCamera, screenToWorld, zoomAt, zoomToFit, type Camera } from '../camera/coords.ts'
 import type { Tool } from '../interaction/tools.ts'
 import { Tool as ToolId } from '../interaction/tools.ts'
 import type { InteractionState } from '../interaction/state.ts'
 import { reduceDown } from '../interaction/machine.ts'
+import type { KinematicPose } from '../interaction/machine.ts'
 import { PixiRenderer } from '../render/PixiRenderer.ts'
 import {
   AddBodyCommand,
@@ -24,17 +19,28 @@ import {
   BatchCommand,
   DuplicateBodyCommand,
   RemoveBodyCommand,
+  RemoveFluidCommand,
   RemoveJointCommand,
+  SetWorldCommand,
   UpdateBodyCommand,
   UpdateJointCommand,
 } from '../scene/commands.ts'
 import { History } from '../scene/history.ts'
-import { emptyScene, type SceneBody, type SceneDocument, type SceneJoint, type VizLayers } from '../scene/document.ts'
+import {
+  cloneDocument,
+  emptyScene,
+  GRAVITY_PRESETS,
+  type GravityPreset,
+  type SceneBody,
+  type SceneDocument,
+  type SceneJoint,
+  type VizLayers,
+} from '../scene/document.ts'
 import { bodyToDesc } from '../scene/builder.ts'
 import { jointToDesc, reattachJoints, springParamsForMasses } from '../scene/joints.ts'
 import { parseDocument, serializeDocument } from '../scene/schema.ts'
 import { SimulationEngine } from '../sim/engine.ts'
-import type { LabStore } from './store.ts'
+import type { GraphChannel, LabStore } from './store.ts'
 
 const MIN_FORCE_DRAG = 0.04
 
@@ -185,7 +191,11 @@ export class LabRuntime {
 
   private worldOf(e: PointerEvent | MouseEvent): Vec2 {
     const rect = this.canvas!.getBoundingClientRect()
-    return screenToWorld({ x: e.clientX - rect.left, y: e.clientY - rect.top }, this.camera, this.view())
+    return screenToWorld(
+      { x: e.clientX - rect.left, y: e.clientY - rect.top },
+      this.camera,
+      this.view(),
+    )
   }
 
   private screenOf(e: PointerEvent | MouseEvent): Vec2 {
@@ -412,7 +422,9 @@ export class LabRuntime {
     const mass = this.bodyMass(s.bodyId)
     const f = dragToForce(mass, dx, dy)
     this.engine.world?.wake(s.bodyId)
-    this.engine.persistentForces = [{ bodyId: s.bodyId, x: origin.x, y: origin.y, fx: f.x, fy: f.y }]
+    this.engine.persistentForces = [
+      { bodyId: s.bodyId, x: origin.x, y: origin.y, fx: f.x, fy: f.y },
+    ]
   }
 
   private hitDynamic(x: number, y: number): string | null {
@@ -423,15 +435,32 @@ export class LabRuntime {
     })
   }
 
-  private poseOf(id: string): Transform {
+  private poseOf(id: string): KinematicPose {
     const snap = this.engine.interpolated(id)
-    if (snap) return { x: snap.x, y: snap.y, angle: snap.angle }
+    if (snap)
+      return {
+        x: snap.x,
+        y: snap.y,
+        angle: snap.angle,
+        vx: snap.vx,
+        vy: snap.vy,
+        omega: snap.omega,
+      }
     const body = this.engine.doc.bodies.find((b) => b.id === id)
-    return { x: body?.x ?? 0, y: body?.y ?? 0, angle: body?.angle ?? 0 }
+    return {
+      x: body?.x ?? 0,
+      y: body?.y ?? 0,
+      angle: body?.angle ?? 0,
+      vx: body?.vx ?? 0,
+      vy: body?.vy ?? 0,
+      omega: body?.omega ?? 0,
+    }
   }
 
   private bodyMass(id: string): number {
-    return this.engine.world?.getBody(id)?.mass ?? this.engine.curr.find((b) => b.id === id)?.mass ?? 1
+    return (
+      this.engine.world?.getBody(id)?.mass ?? this.engine.curr.find((b) => b.id === id)?.mass ?? 1
+    )
   }
 
   private ensurePlaying(): void {
@@ -445,9 +474,7 @@ export class LabRuntime {
     const id = this.ids.next('body')
     if (tool === 'circle') {
       const r = Math.max(0.08, dist(a, b))
-      this.addBody(
-        this.makeBody(id, 'Círculo', a.x, a.y, { kind: 'circle', radius: r }, matId),
-      )
+      this.addBody(this.makeBody(id, 'Círculo', a.x, a.y, { kind: 'circle', radius: r }, matId))
     } else if (tool === 'rect') {
       const hx = Math.max(0.08, Math.abs(b.x - a.x) / 2)
       const hy = Math.max(0.08, Math.abs(b.y - a.y) / 2)
@@ -471,7 +498,9 @@ export class LabRuntime {
       const cx = points.reduce((s, p) => s + p.x, 0) / points.length
       const cy = points.reduce((s, p) => s + p.y, 0) / points.length
       const verts = points.map((p) => ({ x: p.x - cx, y: p.y - cy }))
-      this.addBody(this.makeBody(id, 'Polígono', cx, cy, { kind: 'convex', vertices: verts }, matId))
+      this.addBody(
+        this.makeBody(id, 'Polígono', cx, cy, { kind: 'convex', vertices: verts }, matId),
+      )
     } else if (tool === 'fluid') {
       const minX = Math.min(a.x, b.x)
       const maxX = Math.max(a.x, b.x)
@@ -539,11 +568,6 @@ export class LabRuntime {
     this.pushUi()
   }
 
-  patchBody(id: string, patch: Partial<SceneBody>): void {
-    const body = this.engine.doc.bodies.find((b) => b.id === id)
-    if (body) Object.assign(body, patch)
-  }
-
   commitPatch(id: string, patch: Partial<SceneBody>): void {
     this.history.apply(new UpdateBodyCommand(id, patch))
     const body = this.engine.doc.bodies.find((b) => b.id === id)
@@ -576,11 +600,22 @@ export class LabRuntime {
       reattachJoints(this.engine.world, this.engine.doc, id)
       this.engine.syncBodies()
     } else {
+      const live = this.engine.world.getBody(id)
       if (patch.x !== undefined || patch.y !== undefined || patch.angle !== undefined) {
-        this.engine.world.setTransform(id, body.x, body.y, body.angle)
+        this.engine.world.setTransform(
+          id,
+          patch.x ?? live?.x ?? body.x,
+          patch.y ?? live?.y ?? body.y,
+          patch.angle ?? live?.angle ?? body.angle,
+        )
       }
       if (patch.vx !== undefined || patch.vy !== undefined || patch.omega !== undefined) {
-        this.engine.world.setVelocity(id, body.vx, body.vy, body.omega)
+        this.engine.world.setVelocity(
+          id,
+          patch.vx ?? live?.vx ?? body.vx,
+          patch.vy ?? live?.vy ?? body.vy,
+          patch.omega ?? live?.omega ?? body.omega,
+        )
       }
       if (patch.gravityScale !== undefined) this.engine.world.setGravityScale(id, body.gravityScale)
       if (patch.type !== undefined) this.engine.world.setBodyType(id, body.type)
@@ -602,9 +637,75 @@ export class LabRuntime {
     this.pushUi()
   }
 
-  setTimeScale(s: number): void {
+  previewTimeScale(s: number): void {
     this.engine.setTimeScale(s)
     this.pushUi()
+  }
+
+  commitTimeScale(s: number): void {
+    const prev = this.engine.doc.world.timeScale
+    this.engine.setTimeScale(s)
+    if (s === prev) {
+      this.pushUi()
+      return
+    }
+    this.history.apply(new SetWorldCommand({ timeScale: s }, { timeScale: prev }))
+    this.pushUi()
+  }
+
+  setGravityPreset(p: GravityPreset): void {
+    if (p === 'custom') {
+      const prev = this.engine.doc.world.gravityPreset
+      if (prev === 'custom') return
+      this.history.apply(new SetWorldCommand({ gravityPreset: 'custom' }, { gravityPreset: prev }))
+      this.pushUi()
+      return
+    }
+    const g = GRAVITY_PRESETS[p]
+    const world = this.engine.doc.world
+    this.history.apply(
+      new SetWorldCommand(
+        { gravity: { ...g }, gravityPreset: p },
+        { gravity: { ...world.gravity }, gravityPreset: world.gravityPreset },
+      ),
+    )
+    this.engine.setGravity(g)
+    this.pushUi()
+  }
+
+  /** TODO: syncWorld incremental (docs/plan-de-mejora.md Fase 1). Reload evita divergencia documento/mundo. */
+  undo(): void {
+    if (!this.history.undo()) return
+    void this.engine.reload(this.engine.doc).then(() => this.pushUi())
+  }
+
+  redo(): void {
+    if (!this.history.redo()) return
+    void this.engine.reload(this.engine.doc).then(() => this.pushUi())
+  }
+
+  removeFluids(): void {
+    const regions = this.engine.doc.fluidRegions
+    if (!regions.length) return
+    const commands = regions.map((r) => new RemoveFluidCommand(r.id))
+    this.history.apply(commands.length === 1 ? commands[0]! : new BatchCommand(commands))
+    this.pushUi()
+  }
+
+  observeGraph(id: string): void {
+    this.engine.recorder.observe(id)
+  }
+
+  unobserveGraph(id: string): void {
+    this.engine.recorder.unobserve(id)
+  }
+
+  graphSeries(id: string, channel: GraphChannel): { t: Float32Array; y: Float32Array; n: number } {
+    return this.engine.recorder.series(id, channel)
+  }
+
+  setTimeScale(s: number): void {
+    this.commitTimeScale(s)
   }
 
   duplicateSelected(): void {
@@ -711,10 +812,10 @@ export class LabRuntime {
   }
 
   exportJson(): string {
-    this.engine.doc.camera = { ...this.camera }
-    this.engine.doc.visualization = this.store?.getState().viz ?? this.engine.doc.visualization
-    this.engine.doc.world.gravityPreset = this.store?.getState().gravityPreset ?? this.engine.doc.world.gravityPreset
-    return serializeDocument(this.engine.doc)
+    const copy = cloneDocument(this.engine.doc)
+    copy.camera = { ...this.camera }
+    copy.visualization = { ...(this.store?.getState().viz ?? copy.visualization) }
+    return serializeDocument(copy)
   }
 
   async importJson(text: string): Promise<void> {
@@ -739,10 +840,8 @@ export class LabRuntime {
     if (e.key === '.') this.engine.stepOnce()
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault()
-      const changed = e.shiftKey ? this.history.redo() : this.history.undo()
-      if (changed) {
-        void this.engine.reload(this.engine.doc).then(() => this.pushUi())
-      }
+      if (e.shiftKey) this.redo()
+      else this.undo()
     }
     if (e.key === 'Delete' || e.key === 'Backspace') this.deleteSelected()
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
@@ -790,20 +889,36 @@ export class LabRuntime {
     const selected = this.engine.doc.bodies.find((b) => b.id === this.selected[0]) ?? null
     const snap = selected ? this.engine.curr.find((b) => b.id === selected.id) : null
     const selectedJoints = selected
-      ? this.engine.doc.joints.filter((j) => j.bodyA === selected.id || j.bodyB === selected.id)
+      ? this.engine.doc.joints
+          .filter((j) => j.bodyA === selected.id || j.bodyB === selected.id)
+          .map((j) => {
+            const otherId = j.bodyA === selected.id ? j.bodyB : j.bodyA
+            const other = this.engine.doc.bodies.find((b) => b.id === otherId)
+            return { ...structuredClone(j), otherName: other?.name ?? otherId }
+          })
       : []
     store.setState({
       playing: this.engine.clock.playing,
       timeScale: this.engine.clock.timeScale,
       simTime: this.engine.clock.simTime,
       selectedId: selected?.id ?? null,
-      selectedBody: selected,
+      selectedBody: selected ? structuredClone(selected) : null,
       selectedJoints,
       live: snap
-        ? { vx: snap.vx, vy: snap.vy, omega: snap.omega, mass: snap.mass, x: snap.x, y: snap.y, angle: snap.angle }
+        ? {
+            vx: snap.vx,
+            vy: snap.vy,
+            omega: snap.omega,
+            mass: snap.mass,
+            x: snap.x,
+            y: snap.y,
+            angle: snap.angle,
+          }
         : null,
       bodyCount: this.engine.doc.bodies.length,
+      fluidCount: this.engine.doc.fluidRegions.length,
       particleCount: 0,
+      gravityPreset: this.engine.doc.world.gravityPreset,
       timings: {
         physics: this.engine.timings.physics,
         fluids: this.engine.timings.fluids,

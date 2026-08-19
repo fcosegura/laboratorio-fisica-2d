@@ -1,6 +1,6 @@
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
-import { emptyScene, GRAVITY_PRESETS, type GravityPreset } from '../scene/document.ts'
+import { emptyScene, type GravityPreset } from '../scene/document.ts'
 import { PROPERTY_DESCRIPTORS } from '../scene/properties.ts'
 import { EXPERIMENTS } from '../experiments/scenes.ts'
 
@@ -10,23 +10,42 @@ export function TimeBar() {
   const timeScale = useLabStore((s) => s.timeScale)
   const simTime = useLabStore((s) => s.simTime)
   const gravityPreset = useLabStore((s) => s.gravityPreset)
+  const fluidCount = useLabStore((s) => s.fluidCount)
 
   const setPreset = (p: GravityPreset) => {
-    useLabStore.setState({ gravityPreset: p })
-    if (p !== 'custom') lab.engine.setGravity(GRAVITY_PRESETS[p], p)
-    else lab.engine.doc.world.gravityPreset = 'custom'
+    lab.setGravityPreset(p)
   }
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
       <div className="mr-2 font-semibold tracking-tight text-accent">Física 2D</div>
-      <Btn onClick={() => { lab.engine.play(); lab.pushUi() }} active={playing} title="Reproducir">
+      <Btn
+        onClick={() => {
+          lab.engine.play()
+          lab.pushUi()
+        }}
+        active={playing}
+        title="Reproducir"
+      >
         ▶
       </Btn>
-      <Btn onClick={() => { lab.engine.pause(); lab.pushUi() }} active={!playing} title="Pausa">
+      <Btn
+        onClick={() => {
+          lab.engine.pause()
+          lab.pushUi()
+        }}
+        active={!playing}
+        title="Pausa"
+      >
         ⏸
       </Btn>
-      <Btn onClick={() => { lab.engine.stepOnce(); lab.pushUi() }} title="Paso">
+      <Btn
+        onClick={() => {
+          lab.engine.stepOnce()
+          lab.pushUi()
+        }}
+        title="Paso"
+      >
         ⏭
       </Btn>
       <Btn onClick={() => void lab.reset()} title="Reiniciar">
@@ -40,7 +59,9 @@ export function TimeBar() {
           max={PROPERTY_DESCRIPTORS.timeScale.max ?? 5}
           step={PROPERTY_DESCRIPTORS.timeScale.step ?? 0.1}
           value={timeScale}
-          onChange={(e) => lab.setTimeScale(Number(e.target.value))}
+          onChange={(e) => lab.previewTimeScale(Number(e.target.value))}
+          onPointerUp={(e) => lab.commitTimeScale(Number((e.target as HTMLInputElement).value))}
+          onBlur={(e) => lab.commitTimeScale(Number(e.target.value))}
           className="w-24"
         />
       </label>
@@ -86,6 +107,13 @@ export function TimeBar() {
           ⤢
         </Btn>
         <Btn
+          onClick={() => lab.removeFluids()}
+          title="Quitar las regiones de fluido (empuje 2D, superficie plana)"
+          disabled={fluidCount === 0}
+        >
+          Quitar fluido
+        </Btn>
+        <Btn
           onClick={() => {
             const blob = new Blob([lab.exportJson()], { type: 'application/json' })
             const url = URL.createObjectURL(blob)
@@ -112,7 +140,9 @@ export function TimeBar() {
                 .then((t) => lab.importJson(t))
                 .catch((err) => {
                   console.error('Error al importar escena:', err)
-                  alert(`Error al importar escena: ${err instanceof Error ? err.message : String(err)}`)
+                  alert(
+                    `Error al importar escena: ${err instanceof Error ? err.message : String(err)}`,
+                  )
                 })
               e.target.value = ''
             }}
@@ -128,19 +158,26 @@ function Btn({
   onClick,
   active,
   title,
+  disabled,
 }: {
   children: React.ReactNode
   onClick: () => void
   active?: boolean
   title?: string
+  disabled?: boolean
 }) {
   return (
     <button
       type="button"
       title={title}
       onClick={onClick}
+      disabled={disabled}
       className={`rounded-md border px-2 py-1 text-sm ${
-        active ? 'border-accent bg-accent/15 text-accent' : 'border-line bg-panel-2 hover:border-accent/50'
+        disabled
+          ? 'cursor-not-allowed border-line bg-panel-2 text-muted opacity-50'
+          : active
+            ? 'border-accent bg-accent/15 text-accent'
+            : 'border-line bg-panel-2 hover:border-accent/50'
       }`}
     >
       {children}

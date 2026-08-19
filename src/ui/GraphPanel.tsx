@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
+import { CHANNEL_LABELS, GRAPH_CHANNELS, useLabStore } from '../app/store.ts'
 import { useLab } from '../app/lab-context.ts'
-import { useLabStore } from '../app/store.ts'
-import { CHANNEL_LABELS, type RecorderChannel } from '../sim/recorder.ts'
 
 export function GraphPanel() {
   const lab = useLab()
@@ -13,9 +12,9 @@ export function GraphPanel() {
 
   useEffect(() => {
     if (selectedId) {
-      lab.engine.recorder.observe(selectedId)
+      lab.observeGraph(selectedId)
       return () => {
-        lab.engine.recorder.unobserve(selectedId)
+        lab.unobserveGraph(selectedId)
       }
     }
   }, [selectedId, lab])
@@ -29,7 +28,10 @@ export function GraphPanel() {
     const displayWidth = canvas.clientWidth || 900
     const displayHeight = canvas.clientHeight || 140
 
-    if (canvas.width !== Math.floor(displayWidth * dpr) || canvas.height !== Math.floor(displayHeight * dpr)) {
+    if (
+      canvas.width !== Math.floor(displayWidth * dpr) ||
+      canvas.height !== Math.floor(displayHeight * dpr)
+    ) {
       canvas.width = Math.floor(displayWidth * dpr)
       canvas.height = Math.floor(displayHeight * dpr)
     }
@@ -51,7 +53,7 @@ export function GraphPanel() {
       ctx.restore()
       return
     }
-    const { t, y, n } = lab.engine.recorder.series(selectedId, channel as RecorderChannel)
+    const { t, y, n } = lab.graphSeries(selectedId, channel)
     if (n < 2) {
       ctx.fillStyle = '#8b9bb4'
       ctx.fillText('Pulsa Play para registrar datos.', 12, 22)
@@ -80,7 +82,7 @@ export function GraphPanel() {
     }
     ctx.stroke()
     ctx.fillStyle = '#8b9bb4'
-    ctx.fillText(`${CHANNEL_LABELS[channel as RecorderChannel]}  min ${min.toFixed(2)}  max ${max.toFixed(2)}`, 8, 14)
+    ctx.fillText(`${CHANNEL_LABELS[channel]}  min ${min.toFixed(2)}  max ${max.toFixed(2)}`, 8, 14)
     ctx.restore()
   }, [lab, selectedId, channel, simTime, open])
 
@@ -90,7 +92,7 @@ export function GraphPanel() {
     <footer className="flex h-36 shrink-0 border-t border-line bg-panel">
       <div className="flex w-40 flex-col gap-1 border-r border-line p-2 text-xs">
         <div className="text-muted">Gráfica</div>
-        {(['y', 'x', 'vx', 'vy', 'speed', 'energy', 'kinetic'] as const).map((ch) => (
+        {GRAPH_CHANNELS.map((ch) => (
           <button
             key={ch}
             type="button"
@@ -105,4 +107,3 @@ export function GraphPanel() {
     </footer>
   )
 }
-

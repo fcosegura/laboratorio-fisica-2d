@@ -5,7 +5,7 @@ import { RapierWorld } from '../physics/adapters/rapier/RapierWorld.ts'
 import { loadRapier } from '../physics/adapters/rapier/loadRapier.ts'
 import type { BodySnapshot, PhysicsContact, PhysicsWorld } from '../physics/ports.ts'
 import { buildWorld } from '../scene/builder.ts'
-import { cloneDocument, type GravityPreset, type SceneBody, type SceneDocument } from '../scene/document.ts'
+import { cloneDocument, type SceneBody, type SceneDocument } from '../scene/document.ts'
 import { pickBody } from '../scene/picking.ts'
 import { AnalyticFluidSolver } from '../fluids/analytic/AnalyticFluid.ts'
 import { Clock } from './clock.ts'
@@ -108,12 +108,9 @@ export class SimulationEngine {
 
   setTimeScale(s: number): void {
     this.clock.timeScale = s
-    this.doc.world.timeScale = s
   }
 
-  setGravity(g: Vec2, preset: GravityPreset = 'custom'): void {
-    this.doc.world.gravity = { x: g.x, y: g.y }
-    this.doc.world.gravityPreset = preset
+  setGravity(g: Vec2): void {
     this.world?.setGravity(g)
   }
 
@@ -136,7 +133,7 @@ export class SimulationEngine {
     this.syncCurrMap()
 
     this.world.writeContacts(this.contacts)
-    this.recorder.sample(stepTime, PHYSICS_DT, this.doc.world.gravity.y, this.curr)
+    this.recorder.sample(stepTime, PHYSICS_DT, this.doc.world.gravity, this.curr)
     this.timings.fluids = t1 - t0
     this.timings.physics = t2 - t1
   }
@@ -173,8 +170,14 @@ export class SimulationEngine {
     }
   }
 
-  bodyAt(x: number, y: number, predicate?: (id: BodyId, body?: SceneBody) => boolean): BodyId | null {
-    const hit = this.world?.pointHit(x, y, predicate ? { predicate: (id) => predicate(id) } : undefined)?.bodyId ?? null
+  bodyAt(
+    x: number,
+    y: number,
+    predicate?: (id: BodyId, body?: SceneBody) => boolean,
+  ): BodyId | null {
+    const hit =
+      this.world?.pointHit(x, y, predicate ? { predicate: (id) => predicate(id) } : undefined)
+        ?.bodyId ?? null
     if (hit) return hit
     return pickBody(
       this.doc.bodies,
@@ -190,8 +193,13 @@ export class SimulationEngine {
 
   applyImpulse(id: BodyId, jx: number, jy: number, point: Vec2): void {
     this.world?.applyImpulse(id, jx, jy, point)
-    this.appliedForces.push({ bodyId: id, x: point.x, y: point.y, fx: jx / PHYSICS_DT, fy: jy / PHYSICS_DT })
+    this.appliedForces.push({
+      bodyId: id,
+      x: point.x,
+      y: point.y,
+      fx: jx / PHYSICS_DT,
+      fy: jy / PHYSICS_DT,
+    })
     this.syncBodies()
   }
 }
-

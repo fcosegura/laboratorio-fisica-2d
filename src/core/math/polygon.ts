@@ -138,6 +138,29 @@ export function clipPolygon(subject: readonly Vec2[], clipper: readonly Vec2[]):
   return output
 }
 
+/** Stadium (capsule along local Y): two caps + rectangle, then rotated. */
+export function capsuleToPolygon(
+  cx: number,
+  cy: number,
+  halfHeight: number,
+  radius: number,
+  angle = 0,
+  capSegments = 12,
+): Vec2[] {
+  const pts: Vec2[] = []
+  for (let i = 0; i <= capSegments; i++) {
+    const t = Math.PI - (i / capSegments) * Math.PI
+    pts.push(vec2(Math.cos(t) * radius, halfHeight + Math.sin(t) * radius))
+  }
+  for (let i = 0; i <= capSegments; i++) {
+    const t = -(i / capSegments) * Math.PI
+    pts.push(vec2(Math.cos(t) * radius, -halfHeight + Math.sin(t) * radius))
+  }
+  const c = Math.cos(angle)
+  const s = Math.sin(angle)
+  return pts.map((p) => vec2(cx + p.x * c - p.y * s, cy + p.x * s + p.y * c))
+}
+
 export function circleToPolygon(cx: number, cy: number, r: number, segments = 24): Vec2[] {
   const pts: Vec2[] = []
   for (let i = 0; i < segments; i++) {
@@ -147,13 +170,14 @@ export function circleToPolygon(cx: number, cy: number, r: number, segments = 24
   return pts
 }
 
-export function boxToPolygon(cx: number, cy: number, hx: number, hy: number, angle: number): Vec2[] {
-  const local = [
-    vec2(-hx, -hy),
-    vec2(hx, -hy),
-    vec2(hx, hy),
-    vec2(-hx, hy),
-  ]
+export function boxToPolygon(
+  cx: number,
+  cy: number,
+  hx: number,
+  hy: number,
+  angle: number,
+): Vec2[] {
+  const local = [vec2(-hx, -hy), vec2(hx, -hy), vec2(hx, hy), vec2(-hx, hy)]
   const c = Math.cos(angle)
   const s = Math.sin(angle)
   return local.map((p) => vec2(cx + p.x * c - p.y * s, cy + p.x * s + p.y * c))
@@ -175,7 +199,10 @@ export function pointInPolygon(p: Vec2, poly: readonly Vec2[]): boolean {
 export function closestPointOnSegment(p: Vec2, a: Vec2, b: Vec2): Vec2 {
   const abx = b.x - a.x
   const aby = b.y - a.y
-  const t = Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / (abx * abx + aby * aby || 1)))
+  const t = Math.max(
+    0,
+    Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / (abx * abx + aby * aby || 1)),
+  )
   return vec2(a.x + abx * t, a.y + aby * t)
 }
 

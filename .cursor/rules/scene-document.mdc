@@ -9,10 +9,10 @@ alwaysApply: false
 `History` clona con `cloneDocument` antes de `apply`/`invert`. Un comando debe restaurar también el **índice** del array (ver `tests/commands.test.ts`).
 
 ```ts
-// ❌ BAD — mutación pública
-lab.patchBody(id, { x, y })
+// ❌ BAD — mutación pública del documento
+Object.assign(body, { x, y })
 
-// ✅ GOOD — gesto en pausa: Rapier ahora, comando al soltar con orig
+// ✅ GOOD — gesto en pausa: Rapier ahora, comando al soltar con orig viva
 this.engine.world?.setTransform(id, x, y, orig.angle)
 this.history.apply(new UpdateBodyCommand(id, { x, y }, { x: orig.x, y: orig.y }))
 ```

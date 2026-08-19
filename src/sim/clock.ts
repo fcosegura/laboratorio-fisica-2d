@@ -41,10 +41,12 @@ export class Clock {
       steps += 1
     }
     if (this.accumulator >= this.dt) {
-      this.stepsDropped += 1
-      this.accumulator = 0
+      const extra = Math.floor(this.accumulator / this.dt + 1e-12)
+      this.stepsDropped += extra
+      this.accumulator -= extra * this.dt
+      if (this.accumulator < 0) this.accumulator = 0
     }
-    this.alpha = this.accumulator / this.dt
+    this.alpha = this.accumulator <= 1e-12 ? 1 : Math.min(this.accumulator / this.dt, 1)
     return steps
   }
 

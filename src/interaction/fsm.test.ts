@@ -4,7 +4,9 @@ import { Tool } from './tools.ts'
 import { reduceDown, reduceMove } from './machine.ts'
 
 describe('interaction FSM (machine.ts)', () => {
-  const dummyCtx = (overrides: Partial<Parameters<typeof reduceDown>[1]> = {}): Parameters<typeof reduceDown>[1] => ({
+  const dummyCtx = (
+    overrides: Partial<Parameters<typeof reduceDown>[1]> = {},
+  ): Parameters<typeof reduceDown>[1] => ({
     tool: Tool.select,
     world: { x: 1, y: 2 },
     screen: { x: 100, y: 200 },
@@ -13,7 +15,7 @@ describe('interaction FSM (machine.ts)', () => {
     shiftKey: false,
     button: 0,
     camera: { x: 0, y: 0 },
-    poseOf: () => ({ x: 0, y: 0, angle: 0 }),
+    poseOf: () => ({ x: 0, y: 0, angle: 0, vx: 0, vy: 0, omega: 0 }),
     bodyOf: (id) => ({
       id,
       name: 'Test',
@@ -123,5 +125,46 @@ describe('interaction FSM (machine.ts)', () => {
       expect(moved.current).toEqual({ x: 5, y: 5 })
     }
   })
-})
 
+  it('dragging orig and local use poseOf (live kinematics), not bodyOf authorship', () => {
+    const s: InteractionState = { kind: 'idle' }
+    const res = reduceDown(
+      s,
+      dummyCtx({
+        tool: Tool.select,
+        hit: 'body:1',
+        world: { x: 0.2, y: 1.1 },
+        poseOf: () => ({ x: 0, y: 1, angle: 0.3, vx: 1.5, vy: -2, omega: 0.4 }),
+        bodyOf: (id) => ({
+          id,
+          name: 'Test',
+          type: 'dynamic',
+          x: 0,
+          y: 5,
+          angle: 0,
+          vx: 0,
+          vy: 0,
+          omega: 0,
+          massMode: 'density',
+          density: 1000,
+          friction: 0.5,
+          restitution: 0.2,
+          materialId: 'wood',
+          gravityScale: 1,
+          linearDamping: 0,
+          angularDamping: 0,
+          ccd: false,
+          locked: false,
+          lockRotation: false,
+          shape: { kind: 'circle', radius: 1 },
+        }),
+      }),
+    )
+    expect(res.state.kind).toBe('dragging')
+    if (res.state.kind === 'dragging') {
+      expect(res.state.orig).toEqual({ x: 0, y: 1, angle: 0.3, vx: 1.5, vy: -2, omega: 0.4 })
+      expect(res.state.local.x).toBeCloseTo(0.2)
+      expect(res.state.local.y).toBeCloseTo(0.1)
+    }
+  })
+})

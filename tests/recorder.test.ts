@@ -20,8 +20,8 @@ describe('DataRecorder', () => {
     const recorder = new DataRecorder(10, 60)
     recorder.observe('b1')
 
-    recorder.sample(0, 1 / 60, -9.81, [dummyBody('b1', 0, 5, 0, 0)])
-    recorder.sample(1 / 60, 1 / 60, -9.81, [dummyBody('b1', 0, 4.9, 0, -1)])
+    recorder.sample(0, 1 / 60, { x: 0, y: -9.81 }, [dummyBody('b1', 0, 5, 0, 0)])
+    recorder.sample(1 / 60, 1 / 60, { x: 0, y: -9.81 }, [dummyBody('b1', 0, 4.9, 0, -1)])
 
     const ySeries = recorder.series('b1', 'y')
     expect(ySeries.n).toBe(2)
@@ -48,5 +48,22 @@ describe('DataRecorder', () => {
     recorder.observe('b2')
     recorder.unobserveAll()
     expect(recorder.ids()).toEqual([])
+  })
+
+  it('potential energy is −m g · r with datum at the origin', () => {
+    const recorder = new DataRecorder(10, 60)
+    recorder.observe('b1')
+    recorder.sample(0, 1 / 60, { x: 3, y: -4 }, [dummyBody('b1', 1, 2)])
+    const pe = recorder.series('b1', 'potential')
+    expect(pe.y[0]).toBeCloseTo(-2 * (3 * 1 + -4 * 2), 10)
+  })
+
+  it('does not treat the first velocity as acceleration from rest', () => {
+    const recorder = new DataRecorder(10, 60)
+    recorder.observe('b1')
+    recorder.sample(0, 1 / 60, { x: 0, y: -9.81 }, [dummyBody('b1', 0, 0, 8, 0)])
+    expect(recorder.series('b1', 'ax').y[0]).toBe(0)
+    recorder.sample(1 / 60, 1 / 60, { x: 0, y: -9.81 }, [dummyBody('b1', 0, 0, 8, 0)])
+    expect(recorder.series('b1', 'ax').y[1]).toBeCloseTo(0)
   })
 })

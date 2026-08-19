@@ -1,14 +1,18 @@
-import {
-  Application,
-  Container,
-  Graphics,
-  Text,
-  TextStyle,
-} from 'pixi.js'
+import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js'
 import type { Camera } from '../camera/coords.ts'
-import { aabbFromPoints, aabbFromShape, emptyAABB, includeAABB, type AABB } from '../core/math/aabb.ts'
+import {
+  aabbFromPoints,
+  aabbFromShape,
+  emptyAABB,
+  includeAABB,
+  type AABB,
+} from '../core/math/aabb.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
-import { FORCE_ACCEL_PER_METER, forceAnchorWorld, IMPULSE_VELOCITY_PER_METER } from '../interaction/force.ts'
+import {
+  FORCE_ACCEL_PER_METER,
+  forceAnchorWorld,
+  IMPULSE_VELOCITY_PER_METER,
+} from '../interaction/force.ts'
 import { getFluid, getSolid } from '../materials/catalog.ts'
 import type { SceneBody, SceneDocument, VizLayers } from '../scene/document.ts'
 import { jointAnchorWorld } from '../scene/joints.ts'
@@ -41,12 +45,22 @@ function drawShape(g: Graphics, body: SceneBody, color: number, alpha = 1): void
   const s = body.shape
   g.clear()
   if (s.kind === 'circle') {
-    g.circle(0, 0, s.radius).fill({ color, alpha }).stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
+    g.circle(0, 0, s.radius)
+      .fill({ color, alpha })
+      .stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
     g.moveTo(0, 0).lineTo(s.radius, 0).stroke({ color: 0xffffff, alpha: 0.35, width: 0.04 })
   } else if (s.kind === 'box') {
-    g.rect(-s.hx, -s.hy, s.hx * 2, s.hy * 2).fill({ color, alpha }).stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
+    g.rect(-s.hx, -s.hy, s.hx * 2, s.hy * 2)
+      .fill({ color, alpha })
+      .stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
   } else if (s.kind === 'capsule') {
-    g.roundRect(-s.radius, -s.halfHeight - s.radius, s.radius * 2, (s.halfHeight + s.radius) * 2, s.radius)
+    g.roundRect(
+      -s.radius,
+      -s.halfHeight - s.radius,
+      s.radius * 2,
+      (s.halfHeight + s.radius) * 2,
+      s.radius,
+    )
       .fill({ color, alpha })
       .stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
   } else if (s.kind === 'convex') {
@@ -71,7 +85,13 @@ function drawSelectionHighlight(g: Graphics, body: SceneBody): void {
   } else if (s.kind === 'box') {
     g.rect(-s.hx, -s.hy, s.hx * 2, s.hy * 2).stroke({ color: SELECT, width: 0.06, alpha: 1 })
   } else if (s.kind === 'capsule') {
-    g.roundRect(-s.radius, -s.halfHeight - s.radius, s.radius * 2, (s.halfHeight + s.radius) * 2, s.radius).stroke({
+    g.roundRect(
+      -s.radius,
+      -s.halfHeight - s.radius,
+      s.radius * 2,
+      (s.halfHeight + s.radius) * 2,
+      s.radius,
+    ).stroke({
       color: SELECT,
       width: 0.06,
       alpha: 1,
@@ -187,10 +207,22 @@ export class PixiRenderer {
     const x0 = Math.floor(minX / step) * step
     const y0 = Math.floor(minY / step) * step
     for (let x = x0; x <= maxX; x += step) {
-      g.moveTo(x, minY).lineTo(x, maxY).stroke({ color: x === 0 ? GRID_MAJOR : GRID, width: x === 0 ? 0.03 : 0.015, pixelLine: true })
+      g.moveTo(x, minY)
+        .lineTo(x, maxY)
+        .stroke({
+          color: x === 0 ? GRID_MAJOR : GRID,
+          width: x === 0 ? 0.03 : 0.015,
+          pixelLine: true,
+        })
     }
     for (let y = y0; y <= maxY; y += step) {
-      g.moveTo(minX, y).lineTo(maxX, y).stroke({ color: y === 0 ? GRID_MAJOR : GRID, width: y === 0 ? 0.03 : 0.015, pixelLine: true })
+      g.moveTo(minX, y)
+        .lineTo(maxX, y)
+        .stroke({
+          color: y === 0 ? GRID_MAJOR : GRID,
+          width: y === 0 ? 0.03 : 0.015,
+          pixelLine: true,
+        })
     }
   }
 
@@ -201,7 +233,12 @@ export class PixiRenderer {
       const sample = engine.fluids.samples.find((s) => s.regionId === region.id)
       const surfaceY = sample?.surfaceY ?? region.restSurfaceY
       const mat = getFluid(region.materialId)
-      const clipped = clipHalfPlane(region.polygon, 0, 1, surfaceY)
+      const clipped = clipHalfPlane(
+        region.polygon,
+        sample?.clipNx ?? 0,
+        sample?.clipNy ?? 1,
+        sample?.clipD ?? surfaceY,
+      )
       if (clipped.length < 3) continue
       const pts = clipped.flatMap((p) => [p.x, p.y])
       g.poly(pts).fill({ color: mat.color, alpha: mat.opacity })
@@ -243,12 +280,22 @@ export class PixiRenderer {
     }
   }
 
-  private arrow(g: Graphics, x: number, y: number, dx: number, dy: number, color: number, width = 0.04): void {
+  private arrow(
+    g: Graphics,
+    x: number,
+    y: number,
+    dx: number,
+    dy: number,
+    color: number,
+    width = 0.04,
+  ): void {
     const len = Math.hypot(dx, dy)
     if (len < 1e-4) return
     const ux = dx / len
     const uy = dy / len
-    g.moveTo(x, y).lineTo(x + dx, y + dy).stroke({ color, width, cap: 'round' })
+    g.moveTo(x, y)
+      .lineTo(x + dx, y + dy)
+      .stroke({ color, width, cap: 'round' })
     const ah = Math.min(0.18, len * 0.3)
     g.moveTo(x + dx, y + dy)
       .lineTo(x + dx - ux * ah + -uy * ah * 0.4, y + dy - uy * ah + ux * ah * 0.4)
@@ -258,7 +305,11 @@ export class PixiRenderer {
       .stroke({ color, width, cap: 'round' })
   }
 
-  private drawOverlay(engine: SimulationEngine, viz: VizLayers, interaction: InteractionState): void {
+  private drawOverlay(
+    engine: SimulationEngine,
+    viz: VizLayers,
+    interaction: InteractionState,
+  ): void {
     const g = this.overlay
     g.clear()
     const gy = engine.doc.world.gravity.y
@@ -274,7 +325,14 @@ export class PixiRenderer {
         this.arrow(g, snap.x, snap.y, snap.vx * 0.15, snap.vy * 0.15, VEL)
       }
       if (viz.gravity && body.type === 'dynamic' && body.gravityScale !== 0) {
-        this.arrow(g, snap.x, snap.y, gx * 0.05 * body.gravityScale, gy * 0.05 * body.gravityScale, GRAV)
+        this.arrow(
+          g,
+          snap.x,
+          snap.y,
+          gx * 0.05 * body.gravityScale,
+          gy * 0.05 * body.gravityScale,
+          GRAV,
+        )
       }
     }
 
@@ -392,7 +450,8 @@ export class PixiRenderer {
         const w = Math.abs(b.x - a.x)
         const h = Math.abs(b.y - a.y)
         g.rect(minX, minY, w, h).stroke()
-        if (interaction.tool === 'fluid') g.rect(minX, minY, w, h).fill({ color: 0x3aa0d8, alpha: 0.25 })
+        if (interaction.tool === 'fluid')
+          g.rect(minX, minY, w, h).fill({ color: 0x3aa0d8, alpha: 0.25 })
       } else if (interaction.tool === 'line') {
         g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke()
       } else if (interaction.tool === 'polygon' && interaction.points) {
@@ -427,7 +486,12 @@ export class PixiRenderer {
     if (interaction.kind === 'selecting') {
       const minX = Math.min(interaction.start.x, interaction.current.x)
       const minY = Math.min(interaction.start.y, interaction.current.y)
-      g.rect(minX, minY, Math.abs(interaction.current.x - interaction.start.x), Math.abs(interaction.current.y - interaction.start.y))
+      g.rect(
+        minX,
+        minY,
+        Math.abs(interaction.current.x - interaction.start.x),
+        Math.abs(interaction.current.y - interaction.start.y),
+      )
         .fill({ color: SELECT, alpha: 0.08 })
         .stroke({ color: SELECT, width: 0.03, alpha: 0.8 })
     }
@@ -438,7 +502,10 @@ export class PixiRenderer {
         .lineTo(interaction.current.x, interaction.current.y)
         .stroke({ color: JOINT, width: 0.05, alpha: 0.9 })
       g.circle(origin.x, origin.y, 0.06).fill({ color: JOINT })
-      g.circle(interaction.current.x, interaction.current.y, 0.05).fill({ color: JOINT, alpha: 0.7 })
+      g.circle(interaction.current.x, interaction.current.y, 0.05).fill({
+        color: JOINT,
+        alpha: 0.7,
+      })
     }
   }
 
@@ -481,17 +548,23 @@ export class PixiRenderer {
       const dy = interaction.current.y - origin.y
       const mag = Math.hypot(dx, dy)
       const mass = engine.world?.getBody(interaction.bodyId)?.mass ?? 1
-      const scale = interaction.mode === 'impulse' ? mass * IMPULSE_VELOCITY_PER_METER : mass * FORCE_ACCEL_PER_METER
+      const scale =
+        interaction.mode === 'impulse'
+          ? mass * IMPULSE_VELOCITY_PER_METER
+          : mass * FORCE_ACCEL_PER_METER
       const unit = interaction.mode === 'impulse' ? 'N·s' : 'N'
       add(`${(mag * scale).toFixed(1)} ${unit}`, interaction.current, '#ffb020')
     }
     if (interaction.kind === 'measuring' || measureLabel) {
       const mid = {
-        x: (interaction.kind === 'measuring' ? (interaction.start.x + interaction.current.x) / 2 : 0),
-        y: (interaction.kind === 'measuring' ? (interaction.start.y + interaction.current.y) / 2 : 0),
+        x: interaction.kind === 'measuring' ? (interaction.start.x + interaction.current.x) / 2 : 0,
+        y: interaction.kind === 'measuring' ? (interaction.start.y + interaction.current.y) / 2 : 0,
       }
       if (interaction.kind === 'measuring') {
-        const d = Math.hypot(interaction.current.x - interaction.start.x, interaction.current.y - interaction.start.y)
+        const d = Math.hypot(
+          interaction.current.x - interaction.start.x,
+          interaction.current.y - interaction.start.y,
+        )
         add(`${d.toFixed(2)} m`, mid)
       }
     }
@@ -503,7 +576,10 @@ export class PixiRenderer {
     }
   }
 
-  private forceOrigin(engine: SimulationEngine, interaction: Extract<InteractionState, { kind: 'applyingForce' }>): Vec2 {
+  private forceOrigin(
+    engine: SimulationEngine,
+    interaction: Extract<InteractionState, { kind: 'applyingForce' }>,
+  ): Vec2 {
     if (!interaction.local) return interaction.current
     const snap = engine.interpolated(interaction.bodyId)
     const body = engine.doc.bodies.find((b) => b.id === interaction.bodyId)

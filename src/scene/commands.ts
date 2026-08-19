@@ -1,4 +1,11 @@
-import type { SceneBody, SceneDocument, SceneFluidRegion, SceneJoint } from './document.ts'
+import type {
+  GravityPreset,
+  SceneBody,
+  SceneDocument,
+  SceneFluidRegion,
+  SceneJoint,
+} from './document.ts'
+import type { Vec2 } from '../core/math/vec2.ts'
 
 export interface Command {
   apply(doc: SceneDocument): void
@@ -45,7 +52,9 @@ export class RemoveBodyCommand implements Command {
     const i = doc.bodies.findIndex((b) => b.id === this.id)
     this.index = i
     this.stored = i >= 0 ? structuredClone(doc.bodies[i]!) : null
-    this.storedJoints = doc.joints.filter((j) => j.bodyA === this.id || j.bodyB === this.id).map((j) => structuredClone(j))
+    this.storedJoints = doc.joints
+      .filter((j) => j.bodyA === this.id || j.bodyB === this.id)
+      .map((j) => structuredClone(j))
     if (i >= 0) doc.bodies.splice(i, 1)
     if (this.storedJoints.length) {
       const removed = new Set(this.storedJoints.map((j) => j.id))
@@ -54,7 +63,8 @@ export class RemoveBodyCommand implements Command {
   }
   invert(doc: SceneDocument): void {
     if (this.stored) {
-      const insertAt = this.index >= 0 && this.index <= doc.bodies.length ? this.index : doc.bodies.length
+      const insertAt =
+        this.index >= 0 && this.index <= doc.bodies.length ? this.index : doc.bodies.length
       doc.bodies.splice(insertAt, 0, structuredClone(this.stored))
     }
     for (const joint of this.storedJoints) {
@@ -118,7 +128,10 @@ export class RemoveFluidCommand implements Command {
   }
   invert(doc: SceneDocument): void {
     if (this.stored && !doc.fluidRegions.some((r) => r.id === this.stored!.id)) {
-      const insertAt = this.index >= 0 && this.index <= doc.fluidRegions.length ? this.index : doc.fluidRegions.length
+      const insertAt =
+        this.index >= 0 && this.index <= doc.fluidRegions.length
+          ? this.index
+          : doc.fluidRegions.length
       doc.fluidRegions.splice(insertAt, 0, structuredClone(this.stored))
     }
   }
@@ -166,7 +179,8 @@ export class RemoveJointCommand implements Command {
   }
   invert(doc: SceneDocument): void {
     if (this.stored && !doc.joints.some((j) => j.id === this.stored!.id)) {
-      const insertAt = this.index >= 0 && this.index <= doc.joints.length ? this.index : doc.joints.length
+      const insertAt =
+        this.index >= 0 && this.index <= doc.joints.length ? this.index : doc.joints.length
       doc.joints.splice(insertAt, 0, structuredClone(this.stored))
     }
   }
@@ -199,3 +213,35 @@ export class UpdateJointCommand implements Command {
   }
 }
 
+export type WorldPatch = {
+  gravity?: Vec2
+  gravityPreset?: GravityPreset
+  timeScale?: number
+}
+
+export class SetWorldCommand implements Command {
+  patch: WorldPatch
+  prev: WorldPatch | null = null
+  constructor(patch: WorldPatch, explicitPrev?: WorldPatch) {
+    this.patch = structuredClone(patch)
+    if (explicitPrev) this.prev = structuredClone(explicitPrev)
+  }
+  apply(doc: SceneDocument): void {
+    if (!this.prev) {
+      this.prev = {
+        gravity: { ...doc.world.gravity },
+        gravityPreset: doc.world.gravityPreset,
+        timeScale: doc.world.timeScale,
+      }
+    }
+    if (this.patch.gravity) doc.world.gravity = { ...this.patch.gravity }
+    if (this.patch.gravityPreset !== undefined) doc.world.gravityPreset = this.patch.gravityPreset
+    if (this.patch.timeScale !== undefined) doc.world.timeScale = this.patch.timeScale
+  }
+  invert(doc: SceneDocument): void {
+    if (!this.prev) return
+    if (this.prev.gravity) doc.world.gravity = { ...this.prev.gravity }
+    if (this.prev.gravityPreset !== undefined) doc.world.gravityPreset = this.prev.gravityPreset
+    if (this.prev.timeScale !== undefined) doc.world.timeScale = this.prev.timeScale
+  }
+}
