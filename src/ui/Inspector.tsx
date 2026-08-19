@@ -1,11 +1,14 @@
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { SOLID_MATERIALS } from '../materials/catalog.ts'
+import { JOINT_KIND_META, type SceneJoint } from '../scene/document.ts'
+import { DEFAULT_SPRING_DAMPING, DEFAULT_SPRING_STIFFNESS } from '../scene/joints.ts'
 import type { BodyType, MassMode } from '../physics/ports.ts'
 
 export function Inspector() {
   const lab = useLab()
   const body = useLabStore((s) => s.selectedBody)
+  const joints = useLabStore((s) => s.selectedJoints)
   const live = useLabStore((s) => s.live)
   const open = useLabStore((s) => s.inspectorOpen)
 
@@ -145,6 +148,14 @@ export function Inspector() {
             />
             Bloquear rotación
           </label>
+          {joints.length > 0 && (
+            <div className="flex flex-col gap-2 border-t border-line pt-3">
+              <div className="text-[11px] uppercase tracking-wide text-muted">Uniones</div>
+              {joints.map((joint) => (
+                <JointCard key={joint.id} joint={joint} bodyId={body.id} />
+              ))}
+            </div>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
@@ -167,6 +178,52 @@ export function Inspector() {
         .field { width: 100%; border-radius: 6px; border: 1px solid #2a364c; background: #1b2536; padding: 4px 8px; font-size: 12px; }
       `}</style>
     </aside>
+  )
+}
+
+function JointCard({ joint, bodyId }: { joint: SceneJoint; bodyId: string }) {
+  const lab = useLab()
+  const otherId = joint.bodyA === bodyId ? joint.bodyB : joint.bodyA
+  const other = lab.engine.doc.bodies.find((b) => b.id === otherId)
+  const kindLabel = JOINT_KIND_META.find((k) => k.id === (joint.kind === 'distance' ? 'rope' : joint.kind))?.label ?? joint.kind
+  const stretchy = joint.kind === 'spring' || joint.kind === 'rope' || joint.kind === 'distance'
+  return (
+    <div className="rounded-md border border-line bg-panel-2 p-2">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div className="text-xs">
+          <span className="font-medium">{kindLabel}</span>
+          <span className="text-muted"> · {other?.name ?? otherId}</span>
+        </div>
+        <button
+          type="button"
+          className="rounded border border-danger/40 px-1.5 py-0.5 text-[10px] text-danger hover:bg-danger/10"
+          onClick={() => lab.removeJoint(joint.id)}
+        >
+          Quitar
+        </button>
+      </div>
+      {stretchy && (
+        <Num
+          label="Longitud (m)"
+          value={joint.restLength ?? 0}
+          onChange={(v) => lab.commitJointPatch(joint.id, { restLength: v })}
+        />
+      )}
+      {joint.kind === 'spring' && (
+        <div className="mt-1 grid grid-cols-2 gap-2">
+          <Num
+            label="Rigidez"
+            value={joint.stiffness ?? DEFAULT_SPRING_STIFFNESS}
+            onChange={(v) => lab.commitJointPatch(joint.id, { stiffness: v })}
+          />
+          <Num
+            label="Amortiguación"
+            value={joint.damping ?? DEFAULT_SPRING_DAMPING}
+            onChange={(v) => lab.commitJointPatch(joint.id, { damping: v })}
+          />
+        </div>
+      )}
+    </div>
   )
 }
 

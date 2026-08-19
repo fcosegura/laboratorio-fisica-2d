@@ -1,9 +1,11 @@
 import { SOLID_MATERIALS } from '../materials/catalog.ts'
 import { useLabStore } from '../app/store.ts'
 import { TOOL_META, type Tool } from '../interaction/tools.ts'
+import { JOINT_KIND_META } from '../scene/document.ts'
 
 export function Toolbar() {
   const tool = useLabStore((s) => s.tool)
+  const jointKind = useLabStore((s) => s.jointKind)
   const materialId = useLabStore((s) => s.materialId)
   const viz = useLabStore((s) => s.viz)
 
@@ -22,6 +24,24 @@ export function Toolbar() {
           <ToolIcon id={t.id} />
         </button>
       ))}
+      {tool === 'joint' && (
+        <>
+          <div className="my-1 h-px w-8 bg-line" />
+          {JOINT_KIND_META.map((k) => (
+            <button
+              key={k.id}
+              type="button"
+              title={`${k.label} · ${k.hint}`}
+              onClick={() => useLabStore.setState({ jointKind: k.id })}
+              className={`flex h-7 w-10 items-center justify-center rounded text-[10px] font-semibold ${
+                jointKind === k.id ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-panel-2 hover:text-ink'
+              }`}
+            >
+              {k.chip}
+            </button>
+          ))}
+        </>
+      )}
       <div className="my-1 h-px w-8 bg-line" />
       {SOLID_MATERIALS.map((m) => (
         <button
@@ -70,6 +90,7 @@ function ToolIcon({ id }: { id: Tool }) {
     fluid: '💧',
     force: '↗',
     measure: '📏',
+    joint: '⚭',
   }
   return <span>{map[id]}</span>
 }

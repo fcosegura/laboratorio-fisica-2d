@@ -47,9 +47,26 @@ export type SceneFluidRegion = {
   materialId: MaterialId
 }
 
+export const JointKindUi = {
+  fixed: 'fixed',
+  revolute: 'revolute',
+  spring: 'spring',
+  rope: 'rope',
+} as const
+export type JointKindUi = (typeof JointKindUi)[keyof typeof JointKindUi]
+
+export type SceneJointKind = JointKindUi | 'distance'
+
+export const JOINT_KIND_META: { id: JointKindUi; label: string; hint: string; chip: string }[] = [
+  { id: 'fixed', label: 'Soldar', hint: 'Unión rígida', chip: 'So' },
+  { id: 'revolute', label: 'Bisagra', hint: 'Pivote', chip: 'Bi' },
+  { id: 'spring', label: 'Resorte', hint: 'Muelle', chip: 'Re' },
+  { id: 'rope', label: 'Cuerda', hint: 'Distancia máxima', chip: 'Cu' },
+]
+
 export type SceneJoint = {
   id: string
-  kind: 'revolute' | 'distance' | 'spring' | 'fixed' | 'rope'
+  kind: SceneJointKind
   bodyA: BodyId
   bodyB: BodyId
   anchorA: Vec2
@@ -57,6 +74,9 @@ export type SceneJoint = {
   restLength?: number
   stiffness?: number
   damping?: number
+  /** Local rotation frames for a weld, radians. Rapier 2D: angleA + frameA = angleB + frameB. */
+  frameA?: number
+  frameB?: number
 }
 
 export type CameraState = {

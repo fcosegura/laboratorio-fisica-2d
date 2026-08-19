@@ -8,6 +8,7 @@ export const Tool = {
   force: 'force',
   measure: 'measure',
   fluid: 'fluid',
+  joint: 'joint',
 } as const
 export type Tool = (typeof Tool)[keyof typeof Tool]
 
@@ -21,4 +22,5 @@ export const TOOL_META: { id: Tool; label: string; hint: string; group: 'nav' | 
   { id: 'fluid', label: 'Líquido', hint: 'W', group: 'create' },
   { id: 'force', label: 'Fuerza', hint: 'F · arrastra; Mayús sostiene', group: 'phys' },
   { id: 'measure', label: 'Medir', hint: 'M', group: 'phys' },
+  { id: 'joint', label: 'Unir', hint: 'J · arrastra de un cuerpo a otro', group: 'phys' },
 ]

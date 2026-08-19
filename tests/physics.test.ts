@@ -5,6 +5,10 @@ import { RapierWorld } from '../src/physics/adapters/rapier/RapierWorld.ts'
 import { loadRapier } from '../src/physics/adapters/rapier/loadRapier.ts'
 import { SimulationEngine } from '../src/sim/engine.ts'
 import { emptyScene } from '../src/scene/document.ts'
+import { EXPERIMENTS } from '../src/experiments/scenes.ts'
+import { inverseTransformPoint, transformPoint } from '../src/core/math/transform.ts'
+import type { BodyDesc } from '../src/physics/ports.ts'
+import { reducedMass, springParamsForMasses } from '../src/scene/joints.ts'
 import { getSolid } from '../src/materials/catalog.ts'
 import { polygonArea } from '../src/core/math/polygon.ts'
 import { AnalyticFluidSolver } from '../src/fluids/analytic/AnalyticFluid.ts'
@@ -80,6 +84,241 @@ describe('impulse', () => {
     world.applyImpulse('block', j.x, j.y)
     world.step()
     expect(world.getBody('block')!.vx).toBeCloseTo(IMPULSE_VELOCITY_PER_METER, 1)
+    world.destroy()
+  })
+})
+
+function ball(id: string, x: number, y: number, extra: Partial<BodyDesc> = {}): BodyDesc {
+  return {
+    id,
+    type: extra.type ?? 'dynamic',
+    translation: { x, y },
+    rotation: 0,
+    gravityScale: extra.gravityScale ?? 0,
+    linearDamping: 0,
+    angularDamping: 0,
+    colliders: [{ shape: { kind: 'circle', radius: 0.2 }, density: 1, friction: 0, restitution: 0 }],
+    ...extra,
+  }
+}
+
+describe('spring defaults', () => {
+  it('uses reduced mass and scales stiffness ~400 μ', () => {
+    expect(reducedMass(10, 10)).toBeCloseTo(5)
+    expect(reducedMass(0, 8)).toBeCloseTo(8)
+    expect(reducedMass(12, Infinity)).toBeCloseTo(12)
+    const two = springParamsForMasses(10, 10)
+    expect(two.stiffness).toBeCloseTo(400 * 5)
+    expect(two.damping).toBeCloseTo(2 * Math.sqrt(two.stiffness * 5))
+    const vsFixed = springParamsForMasses(0, 150)
+    expect(vsFixed.stiffness).toBeCloseTo(400 * 150)
+  })
+})
+
+describe('joints', () => {
+  it('fixed keeps relative pose', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: 0 }, PHYSICS_DT)
+    world.addBody(ball('a', 0, 0))
+    world.addBody(ball('b', 1, 0))
+    world.addJoint({
+      id: 'j',
+      kind: 'fixed',
+      bodyA: 'a',
+      bodyB: 'b',
+      anchorA: { x: 0.5, y: 0 },
+      anchorB: { x: -0.5, y: 0 },
+    })
+    world.applyImpulse('a', 0, 4)
+    for (let i = 0; i < 60; i++) world.step()
+    const a = world.getBody('a')!
+    const b = world.getBody('b')!
+    expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeCloseTo(1, 1)
+    expect(a.angle).toBeCloseTo(b.angle, 1)
+    world.destroy()
+  })
+
+  it('revolute keeps anchors coincident', async () => {
+    const exp = EXPERIMENTS.find((e) => e.id === 'pendulum')!.build()
+    const engine = new SimulationEngine(exp)
+    await engine.init()
+    for (let i = 0; i < 90; i++) engine.stepOnce()
+    const joint = engine.doc.joints[0]!
+    const a = engine.curr.find((b) => b.id === joint.bodyA)!
+    const b = engine.curr.find((c) => c.id === joint.bodyB)!
+    const wa = transformPoint({ x: 0, y: 0 }, joint.anchorA, a)
+    const wb = transformPoint({ x: 0, y: 0 }, joint.anchorB, b)
+    expect(Math.hypot(wb.x - wa.x, wb.y - wa.y)).toBeLessThan(0.08)
+    engine.world?.destroy()
+  })
+
+  it('rope does not exceed rest length', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: 0 }, PHYSICS_DT)
+    world.addBody(ball('a', 0, 0, { type: 'fixed' }))
+    world.addBody(ball('b', 0.4, 0))
+    world.addJoint({
+      id: 'j',
+      kind: 'rope',
+      bodyA: 'a',
+      bodyB: 'b',
+      anchorA: { x: 0, y: 0 },
+      anchorB: { x: 0, y: 0 },
+      restLength: 1,
+    })
+    world.applyImpulse('b', 12, 0)
+    for (let i = 0; i < 120; i++) world.step()
+    const b = world.getBody('b')!
+    expect(Math.hypot(b.x, b.y)).toBeLessThan(1.12)
+    world.destroy()
+  })
+
+  it('spring pulls toward rest length', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: 0 }, PHYSICS_DT)
+    world.addBody(ball('a', 0, 0, { type: 'fixed' }))
+    world.addBody(ball('b', 2, 0))
+    const params = springParamsForMasses(0, world.getBody('b')!.mass)
+    world.addJoint({
+      id: 'j',
+      kind: 'spring',
+      bodyA: 'a',
+      bodyB: 'b',
+      anchorA: { x: 0, y: 0 },
+      anchorB: { x: 0, y: 0 },
+      restLength: 1,
+      stiffness: params.stiffness,
+      damping: params.damping,
+    })
+    for (let i = 0; i < 30; i++) world.step()
+    const b = world.getBody('b')!
+    expect(b.x).toBeLessThan(1.9)
+    world.destroy()
+  })
+
+  it('in-place revolute between separated bodies does not collapse centers', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: 0 }, PHYSICS_DT)
+    world.addBody(ball('a', 0, 0))
+    world.addBody(ball('b', 3, 0))
+    const poseA = { x: 0, y: 0, angle: 0 }
+    const poseB = { x: 3, y: 0, angle: 0 }
+    const shared = transformPoint({ x: 0, y: 0 }, { x: 0, y: 0 }, poseA)
+    const anchorB = inverseTransformPoint({ x: 0, y: 0 }, shared, poseB)
+    world.addJoint({
+      id: 'j',
+      kind: 'revolute',
+      bodyA: 'a',
+      bodyB: 'b',
+      anchorA: { x: 0, y: 0 },
+      anchorB,
+    })
+    for (let i = 0; i < 60; i++) world.step()
+    const a = world.getBody('a')!
+    const b = world.getBody('b')!
+    expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeGreaterThan(2.5)
+    expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeCloseTo(3, 1)
+    const wa = transformPoint({ x: 0, y: 0 }, { x: 0, y: 0 }, a)
+    const wb = transformPoint({ x: 0, y: 0 }, anchorB, b)
+    expect(Math.hypot(wb.x - wa.x, wb.y - wa.y)).toBeLessThan(0.08)
+    world.destroy()
+  })
+
+  it('in-place weld between separated, rotated bodies does not yank them together', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: 0 }, PHYSICS_DT)
+    const angleB = Math.PI / 2
+    world.addBody({ ...ball('a', 0, 0), rotation: 0 })
+    world.addBody({ ...ball('b', 2, 0), rotation: angleB })
+    const poseA = { x: 0, y: 0, angle: 0 }
+    const poseB = { x: 2, y: 0, angle: angleB }
+    const shared = transformPoint({ x: 0, y: 0 }, { x: 0, y: 0 }, poseA)
+    const anchorB = inverseTransformPoint({ x: 0, y: 0 }, shared, poseB)
+    world.addJoint({
+      id: 'j',
+      kind: 'fixed',
+      bodyA: 'a',
+      bodyB: 'b',
+      anchorA: { x: 0, y: 0 },
+      anchorB,
+      frameA: 0,
+      frameB: poseA.angle - poseB.angle,
+    })
+    world.applyImpulse('a', 0, 3)
+    for (let i = 0; i < 60; i++) world.step()
+    const a = world.getBody('a')!
+    const b = world.getBody('b')!
+    expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeGreaterThan(1.5)
+    expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeCloseTo(2, 1)
+    let d = b.angle - a.angle
+    while (d > Math.PI) d -= Math.PI * 2
+    while (d < -Math.PI) d += Math.PI * 2
+    expect(d).toBeCloseTo(angleB, 1)
+    world.destroy()
+  })
+
+  it('mass-scaled spring does not hang infinitely under gravity', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: -9.81 }, PHYSICS_DT)
+    world.addBody(ball('a', 0, 4, { type: 'fixed' }))
+    world.addBody({
+      ...ball('b', 0, 2),
+      gravityScale: 1,
+      colliders: [{ shape: { kind: 'box', hx: 0.25, hy: 0.25 }, mass: 150, friction: 0, restitution: 0 }],
+    })
+    const params = springParamsForMasses(0, world.getBody('b')!.mass)
+    world.addJoint({
+      id: 'j',
+      kind: 'spring',
+      bodyA: 'a',
+      bodyB: 'b',
+      anchorA: { x: 0, y: 0 },
+      anchorB: { x: 0, y: 0 },
+      restLength: 2,
+      stiffness: params.stiffness,
+      damping: params.damping,
+    })
+    for (let i = 0; i < 180; i++) world.step()
+    const b = world.getBody('b')!
+    expect(b.y).toBeGreaterThan(1.5)
+    expect(b.y).toBeLessThan(2.3)
+    world.destroy()
+  })
+
+  it('addJoint ignores missing bodies and duplicate ids', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: 0 }, PHYSICS_DT)
+    world.addBody(ball('a', 0, 0))
+    world.addJoint({
+      id: 'j',
+      kind: 'rope',
+      bodyA: 'a',
+      bodyB: 'missing',
+      anchorA: { x: 0, y: 0 },
+      anchorB: { x: 0, y: 0 },
+      restLength: 1,
+    })
+    world.applyImpulse('a', 3, 0)
+    world.step()
+    expect(world.getBody('a')!.vx).toBeGreaterThan(1)
+    world.setVelocity('a', 0, 0, 0)
+    world.setTransform('a', 0, 0, 0)
+    world.addBody(ball('b', 1, 0))
+    const desc = {
+      id: 'j',
+      kind: 'fixed' as const,
+      bodyA: 'a',
+      bodyB: 'b',
+      anchorA: { x: 0.5, y: 0 },
+      anchorB: { x: -0.5, y: 0 },
+    }
+    world.addJoint(desc)
+    world.addJoint(desc)
+    world.applyImpulse('a', 0, 3)
+    for (let i = 0; i < 30; i++) world.step()
+    const a = world.getBody('a')!
+    const b = world.getBody('b')!
+    expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeCloseTo(1, 1)
     world.destroy()
   })
 })

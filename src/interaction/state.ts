@@ -25,6 +25,7 @@ export type InteractionState =
       mode: 'impulse' | 'force'
     }
   | { kind: 'measuring'; start: Vec2; current: Vec2 }
+  | { kind: 'joining'; bodyA: BodyId; anchorA: Vec2; current: Vec2 }
   | { kind: 'pinching'; startDist: number; origPpm: number }
 
 export type Pointer = {

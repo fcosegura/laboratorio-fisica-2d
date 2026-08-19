@@ -1,4 +1,4 @@
-import type { SceneBody, SceneDocument, SceneFluidRegion } from './document.ts'
+import type { SceneBody, SceneDocument, SceneFluidRegion, SceneJoint } from './document.ts'
 
 export interface Command {
   apply(doc: SceneDocument): void
@@ -21,16 +21,25 @@ export class AddBodyCommand implements Command {
 export class RemoveBodyCommand implements Command {
   id: string
   stored: SceneBody | null = null
+  storedJoints: SceneJoint[] = []
   constructor(id: string) {
     this.id = id
   }
   apply(doc: SceneDocument): void {
     const i = doc.bodies.findIndex((b) => b.id === this.id)
     this.stored = i >= 0 ? structuredClone(doc.bodies[i]!) : null
+    this.storedJoints = doc.joints.filter((j) => j.bodyA === this.id || j.bodyB === this.id).map((j) => structuredClone(j))
     if (i >= 0) doc.bodies.splice(i, 1)
+    if (this.storedJoints.length) {
+      const removed = new Set(this.storedJoints.map((j) => j.id))
+      doc.joints = doc.joints.filter((j) => !removed.has(j.id))
+    }
   }
   invert(doc: SceneDocument): void {
     if (this.stored) doc.bodies.push(structuredClone(this.stored))
+    for (const joint of this.storedJoints) {
+      if (!doc.joints.some((j) => j.id === joint.id)) doc.joints.push(structuredClone(joint))
+    }
   }
 }
 
@@ -93,5 +102,57 @@ export class DuplicateBodyCommand implements Command {
   }
   invert(doc: SceneDocument): void {
     doc.bodies = doc.bodies.filter((b) => b.id !== this.newBody.id)
+  }
+}
+
+export class AddJointCommand implements Command {
+  joint: SceneJoint
+  constructor(joint: SceneJoint) {
+    this.joint = joint
+  }
+  apply(doc: SceneDocument): void {
+    if (doc.joints.some((j) => j.id === this.joint.id)) return
+    doc.joints.push(structuredClone(this.joint))
+  }
+  invert(doc: SceneDocument): void {
+    doc.joints = doc.joints.filter((j) => j.id !== this.joint.id)
+  }
+}
+
+export class RemoveJointCommand implements Command {
+  id: string
+  stored: SceneJoint | null = null
+  constructor(id: string) {
+    this.id = id
+  }
+  apply(doc: SceneDocument): void {
+    const i = doc.joints.findIndex((j) => j.id === this.id)
+    this.stored = i >= 0 ? structuredClone(doc.joints[i]!) : null
+    if (i >= 0) doc.joints.splice(i, 1)
+  }
+  invert(doc: SceneDocument): void {
+    if (this.stored && !doc.joints.some((j) => j.id === this.stored!.id)) {
+      doc.joints.push(structuredClone(this.stored))
+    }
+  }
+}
+
+export class UpdateJointCommand implements Command {
+  id: string
+  patch: Partial<SceneJoint>
+  prev: SceneJoint | null = null
+  constructor(id: string, patch: Partial<SceneJoint>) {
+    this.id = id
+    this.patch = patch
+  }
+  apply(doc: SceneDocument): void {
+    const joint = doc.joints.find((j) => j.id === this.id)
+    if (!joint) return
+    this.prev = structuredClone(joint)
+    Object.assign(joint, this.patch)
+  }
+  invert(doc: SceneDocument): void {
+    const i = doc.joints.findIndex((j) => j.id === this.id)
+    if (i >= 0 && this.prev) doc.joints[i] = structuredClone(this.prev)
   }
 }

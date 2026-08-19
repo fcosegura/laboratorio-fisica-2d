@@ -75,6 +75,9 @@ export type JointDesc = {
   restLength?: number
   stiffness?: number
   damping?: number
+  /** Local rotation frames for a fixed (weld) joint, radians. Rapier 2D: angleA + frameA = angleB + frameB. */
+  frameA?: number
+  frameB?: number
   limits?: [number, number]
   motor?: {
     mode: 'position' | 'velocity'
@@ -154,6 +157,7 @@ export interface PhysicsWorld {
   forEachBody(fn: (body: BodySnapshot) => void): void
   getColliders(id: BodyId): ColliderDesc[]
   addJoint(desc: JointDesc): void
+  removeJoint(id: JointId): void
   clearForces(): void
   destroy(): void
 }

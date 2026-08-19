@@ -1,5 +1,5 @@
-import type { Collider, RigidBody, World } from '@dimforge/rapier2d-compat'
-import type { BodyId, ColliderId } from '../../../core/ids.ts'
+import type { Collider, ImpulseJoint, RigidBody, World } from '@dimforge/rapier2d-compat'
+import type { BodyId, ColliderId, JointId } from '../../../core/ids.ts'
 import { decomposePolygon, toXYArray } from '../../../core/math/decompose.ts'
 import { ensureCCW, isConvex, removeDuplicateVertices } from '../../../core/math/polygon.ts'
 import type { Vec2 } from '../../../core/math/vec2.ts'
@@ -68,6 +68,8 @@ export class RapierWorld implements PhysicsWorld {
   private readonly colliders = new Map<BodyId, Collider[]>()
   private readonly colliderToBody = new Map<number, BodyId>()
   private readonly colliderDescs = new Map<BodyId, ColliderDesc[]>()
+  private readonly joints = new Map<JointId, ImpulseJoint>()
+  private readonly jointEnds = new Map<JointId, { a: BodyId; b: BodyId }>()
   private readonly pendingForces: { id: BodyId; fx: number; fy: number; px?: number; py?: number }[] = []
   private readonly pendingTorques: { id: BodyId; tau: number }[] = []
   private freed = false
@@ -133,6 +135,14 @@ export class RapierWorld implements PhysicsWorld {
   removeBody(id: BodyId): void {
     const body = this.bodies.get(id)
     if (!body) return
+    const drop: JointId[] = []
+    for (const [jointId, ends] of this.jointEnds) {
+      if (ends.a === id || ends.b === id) drop.push(jointId)
+    }
+    for (const jointId of drop) {
+      this.joints.delete(jointId)
+      this.jointEnds.delete(jointId)
+    }
     for (const c of this.colliders.get(id) ?? []) this.colliderToBody.delete(c.handle)
     this.world.removeRigidBody(body)
     this.bodies.delete(id)
@@ -358,6 +368,8 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   addJoint(desc: JointDesc): void {
+    if (this.joints.has(desc.id)) return
+    if (desc.bodyA === desc.bodyB) return
     const a = this.bodies.get(desc.bodyA)
     const b = this.bodies.get(desc.bodyB)
     if (!a || !b) return
@@ -366,11 +378,11 @@ export class RapierWorld implements PhysicsWorld {
       desc.kind === 'revolute'
         ? R.JointData.revolute(desc.anchorA, desc.anchorB)
         : desc.kind === 'fixed'
-          ? R.JointData.fixed(desc.anchorA, 0, desc.anchorB, 0)
+          ? R.JointData.fixed(desc.anchorA, desc.frameA ?? 0, desc.anchorB, desc.frameB ?? 0)
           : desc.kind === 'spring'
             ? R.JointData.spring(
                 desc.restLength ?? 1,
-                desc.stiffness ?? 50,
+                desc.stiffness ?? 400,
                 desc.damping ?? 2,
                 desc.anchorA,
                 desc.anchorB,
@@ -378,7 +390,17 @@ export class RapierWorld implements PhysicsWorld {
             : desc.kind === 'prismatic'
               ? R.JointData.prismatic(desc.anchorA, desc.anchorB, desc.axis ?? { x: 1, y: 0 })
               : R.JointData.rope(desc.restLength ?? 1, desc.anchorA, desc.anchorB)
-    this.world.createImpulseJoint(params, a, b, true)
+    const joint = this.world.createImpulseJoint(params, a, b, true)
+    this.joints.set(desc.id, joint)
+    this.jointEnds.set(desc.id, { a: desc.bodyA, b: desc.bodyB })
+  }
+
+  removeJoint(id: JointId): void {
+    const joint = this.joints.get(id)
+    if (!joint) return
+    this.world.removeImpulseJoint(joint, true)
+    this.joints.delete(id)
+    this.jointEnds.delete(id)
   }
 
   destroy(): void {
@@ -388,5 +410,7 @@ export class RapierWorld implements PhysicsWorld {
     this.bodies.clear()
     this.colliders.clear()
     this.colliderToBody.clear()
+    this.joints.clear()
+    this.jointEnds.clear()
   }
 }

@@ -30,9 +30,21 @@ function reduce(
         mode: 'impulse',
       }
     }
+    if (event.tool === 'joint' && event.hit) {
+      return {
+        kind: 'joining',
+        bodyA: event.hit,
+        anchorA: { x: 0, y: 0 },
+        current: { x: 0, y: 0 },
+      }
+    }
   }
   if (event.type === 'up') return { kind: 'idle' }
   return state
+}
+
+function shouldCommitJoin(state: InteractionState, hit: string | null): boolean {
+  return state.kind === 'joining' && hit !== null && hit !== state.bodyA
 }
 
 describe('interaction FSM', () => {
@@ -59,6 +71,30 @@ describe('interaction FSM', () => {
       current: { x: 1, y: 1 },
     }
     s = reduce(s, { type: 'cancel', tool: 'rect', hit: null })
+    expect(s.kind).toBe('idle')
+  })
+
+  it('joint tool starts joining on a body', () => {
+    let s: InteractionState = { kind: 'idle' }
+    s = reduce(s, { type: 'down', tool: Tool.joint, hit: 'body:1' })
+    expect(s.kind).toBe('joining')
+    if (s.kind === 'joining') expect(s.bodyA).toBe('body:1')
+  })
+
+  it('joint up on a different body commits', () => {
+    let s: InteractionState = { kind: 'idle' }
+    s = reduce(s, { type: 'down', tool: Tool.joint, hit: 'body:1' })
+    expect(shouldCommitJoin(s, 'body:2')).toBe(true)
+    s = reduce(s, { type: 'up', tool: Tool.joint, hit: 'body:2' })
+    expect(s.kind).toBe('idle')
+  })
+
+  it('joint up on empty space or the same body cancels', () => {
+    let s: InteractionState = { kind: 'idle' }
+    s = reduce(s, { type: 'down', tool: Tool.joint, hit: 'body:1' })
+    expect(shouldCommitJoin(s, null)).toBe(false)
+    expect(shouldCommitJoin(s, 'body:1')).toBe(false)
+    s = reduce(s, { type: 'up', tool: Tool.joint, hit: null })
     expect(s.kind).toBe('idle')
   })
 })

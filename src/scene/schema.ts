@@ -57,7 +57,21 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z.object({
       color: z.number().optional(),
     }),
   ),
-  joints: z.array(z.any()),
+  joints: z.array(
+    z.object({
+      id: z.string(),
+      kind: z.enum(['revolute', 'distance', 'spring', 'fixed', 'rope']),
+      bodyA: z.string(),
+      bodyB: z.string(),
+      anchorA: vec2,
+      anchorB: vec2,
+      restLength: z.number().nonnegative().optional(),
+      stiffness: z.number().nonnegative().optional(),
+      damping: z.number().nonnegative().optional(),
+      frameA: z.number().optional(),
+      frameB: z.number().optional(),
+    }),
+  ),
   fluidRegions: z.array(
     z.object({
       id: z.string(),

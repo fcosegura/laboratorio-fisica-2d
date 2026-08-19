@@ -152,7 +152,7 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'pendulum',
     title: 'Péndulo',
     build: () => {
-      const doc = base('Péndulo', 'Una masa unida a un anclaje fijo. Añade un resorte/joint en fases posteriores; aquí la masa parte desplazada.')
+      const doc = base('Péndulo', 'Una masa unida a un anclaje fijo con una bisagra (joint revolute).')
       doc.bodies = [
         box('body:anchor', 'Anclaje', 0, 4, 0.15, 0.15, 'metal', { type: 'fixed' }),
         ball('body:bob', 'Masa', 1.6, 3.2, 0.28, 'metal', { restitution: 0 }),

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { emptyScene } from '../src/scene/document.ts'
 import { History } from '../src/scene/history.ts'
-import { AddBodyCommand, RemoveBodyCommand, UpdateBodyCommand } from '../src/scene/commands.ts'
+import { AddBodyCommand, AddJointCommand, RemoveBodyCommand, RemoveJointCommand, UpdateBodyCommand } from '../src/scene/commands.ts'
 import { getSolid } from '../src/materials/catalog.ts'
 import { parseDocument, serializeDocument } from '../src/scene/schema.ts'
-import type { SceneBody, SceneDocument } from '../src/scene/document.ts'
+import type { SceneBody, SceneDocument, SceneJoint } from '../src/scene/document.ts'
 
 function woodBall(id: string): SceneBody {
   const mat = getSolid('wood')
@@ -51,6 +51,39 @@ describe('serialization', () => {
     expect(again.world.gravity.y).toBeCloseTo(-9.81)
   })
 
+  it('round-trips joints including the distance alias', () => {
+    const doc = emptyScene('Con uniones')
+    doc.bodies.push(woodBall('body:a'), woodBall('body:b'))
+    doc.bodies[doc.bodies.length - 1]!.x = 1
+    const joint: SceneJoint = {
+      id: 'joint:1',
+      kind: 'distance',
+      bodyA: 'body:a',
+      bodyB: 'body:b',
+      anchorA: { x: 0, y: 0 },
+      anchorB: { x: 0, y: 0 },
+      restLength: 1,
+    }
+    doc.joints.push(joint)
+    const weld: SceneJoint = {
+      id: 'joint:2',
+      kind: 'fixed',
+      bodyA: 'body:a',
+      bodyB: 'body:b',
+      anchorA: { x: 0, y: 0 },
+      anchorB: { x: -1, y: 0 },
+      frameA: 0,
+      frameB: -0.4,
+    }
+    doc.joints.push(weld)
+    const again = parseDocument(serializeDocument(doc))
+    expect(again.joints).toHaveLength(2)
+    expect(again.joints[0]!.kind).toBe('distance')
+    expect(again.joints[0]!.restLength).toBe(1)
+    expect(again.joints[1]!.frameA).toBe(0)
+    expect(again.joints[1]!.frameB).toBeCloseTo(-0.4)
+  })
+
   it('rejects invalid documents', () => {
     expect(() => parseDocument('{"schemaVersion":1}')).toThrow()
   })
@@ -77,5 +110,55 @@ describe('history', () => {
     }
     while (history.canUndo()) history.undo()
     expect(serializeDocument(doc)).toBe(initial)
+  })
+})
+
+describe('joint commands', () => {
+  const hinge = (): SceneJoint => ({
+    id: 'joint:1',
+    kind: 'revolute',
+    bodyA: 'body:ground',
+    bodyB: 'body:extra',
+    anchorA: { x: 0, y: 0 },
+    anchorB: { x: 0, y: 1 },
+  })
+
+  it('adds and removes a joint with undo', () => {
+    let doc: SceneDocument = emptyScene()
+    const history = new History(
+      () => doc,
+      (d) => {
+        doc = d
+      },
+    )
+    history.apply(new AddBodyCommand(woodBall('body:extra')))
+    history.apply(new AddJointCommand(hinge()))
+    expect(doc.joints).toHaveLength(1)
+    history.apply(new RemoveJointCommand('joint:1'))
+    expect(doc.joints).toHaveLength(0)
+    history.undo()
+    expect(doc.joints).toHaveLength(1)
+    history.undo()
+    expect(doc.joints).toHaveLength(0)
+  })
+
+  it('removing a body also removes its joints and undo restores them', () => {
+    let doc: SceneDocument = emptyScene()
+    const history = new History(
+      () => doc,
+      (d) => {
+        doc = d
+      },
+    )
+    history.apply(new AddBodyCommand(woodBall('body:extra')))
+    history.apply(new AddJointCommand(hinge()))
+    expect(doc.joints).toHaveLength(1)
+    history.apply(new RemoveBodyCommand('body:extra'))
+    expect(doc.bodies.find((b) => b.id === 'body:extra')).toBeUndefined()
+    expect(doc.joints).toHaveLength(0)
+    history.undo()
+    expect(doc.bodies.find((b) => b.id === 'body:extra')).toBeTruthy()
+    expect(doc.joints).toHaveLength(1)
+    expect(doc.joints[0]!.id).toBe('joint:1')
   })
 })

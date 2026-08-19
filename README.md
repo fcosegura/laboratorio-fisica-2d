@@ -11,6 +11,7 @@ No es una demo. Es un laboratorio para crear escenas, cambiar propiedades y ver 
 - Cámara con pan, zoom al cursor y gestos táctiles
 - Play / Pause / Step / Reset con **paso fijo** de 1/60 s
 - Inspector con densidad o masa explícita (nunca las dos como fuente de verdad)
+- Uniones entre cuerpos: soldar, bisagra, resorte y cuerda
 - Herramienta de fuerza (impulso o fuerza sostenida con Mayús)
 - Vectores de velocidad, gravedad, contactos (impulsos reales del solver)
 - Gráficas de posición, velocidad y energía
@@ -37,7 +38,8 @@ npm run build
 | --- | --- |
 | Reproducir / pausar | Espacio o barra superior |
 | Paso a paso | `.` |
-| Herramientas | V seleccionar, H mano, C círculo, R rectángulo, G polígono, L plataforma, W líquido, F fuerza, M medir |
+| Herramientas | V seleccionar, H mano, C círculo, R rectángulo, G polígono, L plataforma, W líquido, F fuerza, M medir, J unir |
+| Unir | arrastra de un cuerpo a otro; el tipo (soldar, bisagra, resorte, cuerda) se elige en la barra |
 | Zoom | rueda o pellizco |
 | Pan | botón medio, derecho, o herramienta Mano |
 | Polígono | clics para vértices, Enter o doble clic para cerrar |

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { DEFAULT_VIZ, type SceneBody, type VizLayers } from '../scene/document.ts'
+import { DEFAULT_VIZ, type JointKindUi, type SceneBody, type SceneJoint, type VizLayers } from '../scene/document.ts'
 import { Tool, type Tool as ToolId } from '../interaction/tools.ts'
 import type { GravityPreset } from '../scene/document.ts'
 
@@ -24,6 +24,7 @@ export type Timings = {
 
 export type LabUiState = {
   tool: ToolId
+  jointKind: JointKindUi
   materialId: string
   viz: VizLayers
   playing: boolean
@@ -31,6 +32,7 @@ export type LabUiState = {
   simTime: number
   selectedId: string | null
   selectedBody: SceneBody | null
+  selectedJoints: SceneJoint[]
   live: LiveBody | null
   bodyCount: number
   particleCount: number
@@ -47,6 +49,7 @@ export type LabUiState = {
 
 export const useLabStore = create<LabUiState>(() => ({
   tool: Tool.select,
+  jointKind: 'revolute',
   materialId: 'wood',
   viz: { ...DEFAULT_VIZ },
   playing: false,
@@ -54,6 +57,7 @@ export const useLabStore = create<LabUiState>(() => ({
   simTime: 0,
   selectedId: null,
   selectedBody: null,
+  selectedJoints: [],
   live: null,
   bodyCount: 0,
   particleCount: 0,

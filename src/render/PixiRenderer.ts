@@ -11,6 +11,7 @@ import type { Vec2 } from '../core/math/vec2.ts'
 import { FORCE_ACCEL_PER_METER, forceAnchorWorld, IMPULSE_VELOCITY_PER_METER } from '../interaction/force.ts'
 import { getFluid, getSolid } from '../materials/catalog.ts'
 import type { SceneBody, SceneDocument, VizLayers } from '../scene/document.ts'
+import { jointAnchorWorld } from '../scene/joints.ts'
 import type { AppliedForce, SimulationEngine } from '../sim/engine.ts'
 import type { InteractionState } from '../interaction/state.ts'
 import { clipHalfPlane, polygonCentroid } from '../core/math/polygon.ts'
@@ -24,6 +25,7 @@ const FORCE = 0xffb020
 const VEL = 0x7aa2ff
 const GRAV = 0xe24b8d
 const CONTACT = 0xff6b6b
+const JOINT = 0xc4b5fd
 
 function bodyColor(body: SceneBody): number {
   return body.color ?? getSolid(body.materialId).color
@@ -268,7 +270,78 @@ export class PixiRenderer {
       }
     }
 
+    this.drawJoints(g, engine)
     this.drawGhost(g, engine, interaction)
+  }
+
+  private poseOf(engine: SimulationEngine, id: string) {
+    return engine.interpolated(id) ?? engine.doc.bodies.find((b) => b.id === id) ?? null
+  }
+
+  private drawJoints(g: Graphics, engine: SimulationEngine): void {
+    for (const joint of engine.doc.joints) {
+      const poseA = this.poseOf(engine, joint.bodyA)
+      const poseB = this.poseOf(engine, joint.bodyB)
+      if (!poseA || !poseB) continue
+      const a = jointAnchorWorld(joint.anchorA, poseA)
+      const b = jointAnchorWorld(joint.anchorB, poseB)
+      const kind = joint.kind === 'distance' ? 'rope' : joint.kind
+      if (kind === 'spring') this.drawSpring(g, a, b)
+      else if (kind === 'rope') this.drawDashed(g, a, b)
+      else {
+        g.moveTo(a.x, a.y)
+          .lineTo(b.x, b.y)
+          .stroke({ color: JOINT, width: kind === 'fixed' ? 0.07 : 0.04, alpha: 0.9, cap: 'round' })
+      }
+      if (kind === 'revolute') {
+        g.circle(a.x, a.y, 0.07).stroke({ color: JOINT, width: 0.03 })
+        g.circle(a.x, a.y, 0.03).fill({ color: JOINT, alpha: 0.9 })
+      } else {
+        g.circle(a.x, a.y, 0.045).fill({ color: JOINT, alpha: 0.95 })
+        g.circle(b.x, b.y, 0.045).fill({ color: JOINT, alpha: 0.95 })
+      }
+    }
+  }
+
+  private drawSpring(g: Graphics, a: Vec2, b: Vec2): void {
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const len = Math.hypot(dx, dy) || 1
+    const ux = dx / len
+    const uy = dy / len
+    const px = -uy
+    const py = ux
+    const coils = 8
+    const amp = 0.08
+    g.moveTo(a.x, a.y)
+    for (let i = 1; i <= coils; i++) {
+      const t = i / (coils + 1)
+      const side = i % 2 === 0 ? 1 : -1
+      g.lineTo(a.x + ux * len * t + px * amp * side, a.y + uy * len * t + py * amp * side)
+    }
+    g.lineTo(b.x, b.y).stroke({ color: JOINT, width: 0.04, cap: 'round', join: 'round' })
+  }
+
+  private drawDashed(g: Graphics, a: Vec2, b: Vec2): void {
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-6) return
+    const ux = dx / len
+    const uy = dy / len
+    const dash = 0.12
+    const gap = 0.07
+    let d = 0
+    let draw = true
+    while (d < len) {
+      const seg = Math.min(draw ? dash : gap, len - d)
+      const x0 = a.x + ux * d
+      const y0 = a.y + uy * d
+      d += seg
+      if (draw) g.moveTo(x0, y0).lineTo(a.x + ux * d, a.y + uy * d)
+      draw = !draw
+    }
+    g.stroke({ color: JOINT, width: 0.04, cap: 'round' })
   }
 
   private drawGhost(g: Graphics, engine: SimulationEngine, interaction: InteractionState): void {
@@ -323,6 +396,15 @@ export class PixiRenderer {
       g.rect(minX, minY, Math.abs(interaction.current.x - interaction.start.x), Math.abs(interaction.current.y - interaction.start.y))
         .fill({ color: SELECT, alpha: 0.08 })
         .stroke({ color: SELECT, width: 0.03, alpha: 0.8 })
+    }
+    if (interaction.kind === 'joining') {
+      const pose = this.poseOf(engine, interaction.bodyA)
+      const origin = pose ? jointAnchorWorld(interaction.anchorA, pose) : interaction.current
+      g.moveTo(origin.x, origin.y)
+        .lineTo(interaction.current.x, interaction.current.y)
+        .stroke({ color: JOINT, width: 0.05, alpha: 0.9 })
+      g.circle(origin.x, origin.y, 0.06).fill({ color: JOINT })
+      g.circle(interaction.current.x, interaction.current.y, 0.05).fill({ color: JOINT, alpha: 0.7 })
     }
   }
 

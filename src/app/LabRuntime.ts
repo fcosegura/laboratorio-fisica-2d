@@ -1,7 +1,7 @@
 import { IdFactory } from '../core/ids.ts'
 import { dist } from '../core/math/vec2.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
-import { inverseTransformPoint, type Transform } from '../core/math/transform.ts'
+import { inverseTransformPoint, transformPoint, type Transform } from '../core/math/transform.ts'
 import { dragToForce, dragToImpulse, forceAnchorWorld } from '../interaction/force.ts'
 import { getSolid } from '../materials/catalog.ts'
 import {
@@ -19,12 +19,16 @@ import { PixiRenderer } from '../render/PixiRenderer.ts'
 import {
   AddBodyCommand,
   AddFluidCommand,
+  AddJointCommand,
   DuplicateBodyCommand,
   RemoveBodyCommand,
+  RemoveJointCommand,
   UpdateBodyCommand,
+  UpdateJointCommand,
 } from '../scene/commands.ts'
 import { History } from '../scene/history.ts'
-import { cloneDocument, emptyScene, GRAVITY_PRESETS, type SceneBody, type SceneDocument, type VizLayers } from '../scene/document.ts'
+import { cloneDocument, emptyScene, GRAVITY_PRESETS, type SceneBody, type SceneDocument, type SceneJoint, type VizLayers } from '../scene/document.ts'
+import { jointToDesc, reattachJoints, springParamsForMasses } from '../scene/joints.ts'
 import { parseDocument, serializeDocument } from '../scene/schema.ts'
 import { SimulationEngine } from '../sim/engine.ts'
 import type { LabStore } from './store.ts'
@@ -225,6 +229,7 @@ export class LabRuntime {
 
   private onDown(e: PointerEvent, world: Vec2, screen: Vec2): void {
     const tool = this.tool()
+    if (this.state.kind === 'joining' && tool !== 'joint') this.state = { kind: 'idle' }
     const space = this.store?.getState().spaceHeld
     if (e.button === 1 || e.button === 2 || tool === 'pan' || space) {
       this.state = { kind: 'panning', startScreen: screen, origX: this.camera.x, origY: this.camera.y }
@@ -270,6 +275,21 @@ export class LabRuntime {
 
     if (tool === 'measure') {
       this.state = { kind: 'measuring', start: world, current: world }
+      return
+    }
+
+    if (tool === 'joint') {
+      if (!hit) return
+      this.selected = [hit]
+      const pose = this.poseOf(hit)
+      const local = inverseTransformPoint({ x: 0, y: 0 }, world, pose)
+      this.state = {
+        kind: 'joining',
+        bodyA: hit,
+        anchorA: { x: local.x, y: local.y },
+        current: { x: world.x, y: world.y },
+      }
+      this.pushUi()
       return
     }
 
@@ -327,6 +347,9 @@ export class LabRuntime {
     if (s.kind === 'measuring' || s.kind === 'selecting') {
       this.state = { ...s, current: world }
     }
+    if (s.kind === 'joining') {
+      this.state = { ...s, current: world }
+    }
   }
 
   private onUp(_e: PointerEvent, world: Vec2): void {
@@ -362,6 +385,9 @@ export class LabRuntime {
           )
         }
       }
+    }
+    if (s.kind === 'joining') {
+      this.commitJoin(s, world)
     }
     this.state = { kind: 'idle' }
   }
@@ -578,6 +604,7 @@ export class LabRuntime {
           },
         ],
       })
+      reattachJoints(this.engine.world, this.engine.doc, id)
     } else {
       if (patch.x !== undefined || patch.y !== undefined || patch.angle !== undefined) {
         this.engine.world.setTransform(id, body.x, body.y, body.angle)
@@ -643,6 +670,61 @@ export class LabRuntime {
     this.pushUi()
   }
 
+  addJoint(joint: SceneJoint): void {
+    this.history.apply(new AddJointCommand(joint))
+    this.engine.world?.addJoint(jointToDesc(joint))
+    this.selected = [joint.bodyB]
+    this.pushUi()
+  }
+
+  removeJoint(id: string): void {
+    this.history.apply(new RemoveJointCommand(id))
+    this.engine.world?.removeJoint(id)
+    this.pushUi()
+  }
+
+  commitJointPatch(id: string, patch: Partial<SceneJoint>): void {
+    this.history.apply(new UpdateJointCommand(id, patch))
+    const joint = this.engine.doc.joints.find((j) => j.id === id)
+    if (!joint || !this.engine.world) {
+      this.pushUi()
+      return
+    }
+    this.engine.world.removeJoint(id)
+    this.engine.world.addJoint(jointToDesc(joint))
+    this.pushUi()
+  }
+
+  private commitJoin(s: Extract<InteractionState, { kind: 'joining' }>, world: Vec2): void {
+    const hit = this.engine.bodyAt(world.x, world.y)
+    if (!hit || hit === s.bodyA) return
+    const poseA = this.poseOf(s.bodyA)
+    const poseB = this.poseOf(hit)
+    const worldA = transformPoint({ x: 0, y: 0 }, s.anchorA, poseA)
+    const kind = this.store?.getState().jointKind ?? 'revolute'
+    const coincident = kind === 'fixed' || kind === 'revolute'
+    const localB = inverseTransformPoint({ x: 0, y: 0 }, coincident ? worldA : world, poseB)
+    const joint: SceneJoint = {
+      id: this.ids.next('joint'),
+      kind,
+      bodyA: s.bodyA,
+      bodyB: hit,
+      anchorA: { x: s.anchorA.x, y: s.anchorA.y },
+      anchorB: { x: localB.x, y: localB.y },
+    }
+    if (kind === 'fixed') {
+      joint.frameA = 0
+      joint.frameB = poseA.angle - poseB.angle
+    }
+    if (kind === 'spring' || kind === 'rope') joint.restLength = dist(worldA, world)
+    if (kind === 'spring') {
+      const params = springParamsForMasses(this.bodyMass(s.bodyA), this.bodyMass(hit))
+      joint.stiffness = params.stiffness
+      joint.damping = params.damping
+    }
+    this.addJoint(joint)
+  }
+
   async loadDocument(doc: SceneDocument): Promise<void> {
     this.history.clear()
     this.selected = []
@@ -704,9 +786,13 @@ export class LabRuntime {
       f: ToolId.force,
       m: ToolId.measure,
       w: ToolId.fluid,
+      j: ToolId.joint,
     }
     const t = map[e.key.toLowerCase()]
-    if (t && !e.ctrlKey && !e.metaKey) store.setState({ tool: t })
+    if (t && !e.ctrlKey && !e.metaKey) {
+      store.setState({ tool: t })
+      if (t !== 'joint' && this.state.kind === 'joining') this.state = { kind: 'idle' }
+    }
     if (e.key === 'Escape') this.state = { kind: 'idle' }
     if (e.key === 'Enter' && this.state.kind === 'creating' && this.state.tool === 'polygon') {
       const { start, current, points } = this.state
@@ -720,12 +806,16 @@ export class LabRuntime {
     if (!store) return
     const selected = this.engine.doc.bodies.find((b) => b.id === this.selected[0]) ?? null
     const snap = selected ? this.engine.curr.find((b) => b.id === selected.id) : null
+    const selectedJoints = selected
+      ? this.engine.doc.joints.filter((j) => j.bodyA === selected.id || j.bodyB === selected.id)
+      : []
     store.setState({
       playing: this.engine.clock.playing,
       timeScale: this.engine.clock.timeScale,
       simTime: this.engine.clock.simTime,
       selectedId: selected?.id ?? null,
       selectedBody: selected,
+      selectedJoints,
       live: snap
         ? { vx: snap.vx, vy: snap.vy, omega: snap.omega, mass: snap.mass, x: snap.x, y: snap.y, angle: snap.angle }
         : null,

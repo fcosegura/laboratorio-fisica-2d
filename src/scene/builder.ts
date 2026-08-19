@@ -3,6 +3,7 @@ import { getSolid } from '../materials/catalog.ts'
 import type { BodyDesc } from '../physics/ports.ts'
 import type { PhysicsWorld } from '../physics/ports.ts'
 import type { SceneBody, SceneDocument } from './document.ts'
+import { jointToDesc } from './joints.ts'
 
 export function bodyToDesc(body: SceneBody): BodyDesc {
   const mat = getSolid(body.materialId)
@@ -38,16 +39,6 @@ export function buildWorld(world: PhysicsWorld, doc: SceneDocument): void {
     world.addBody(bodyToDesc(body))
   }
   for (const joint of doc.joints) {
-    world.addJoint({
-      id: joint.id,
-      kind: joint.kind === 'distance' ? 'rope' : joint.kind,
-      bodyA: joint.bodyA,
-      bodyB: joint.bodyB,
-      anchorA: joint.anchorA,
-      anchorB: joint.anchorB,
-      restLength: joint.restLength,
-      stiffness: joint.stiffness,
-      damping: joint.damping,
-    })
+    world.addJoint(jointToDesc(joint))
   }
 }
