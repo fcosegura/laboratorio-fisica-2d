@@ -12,7 +12,12 @@ export function GraphPanel() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
-    if (selectedId) lab.engine.recorder.observe(selectedId)
+    if (selectedId) {
+      lab.engine.recorder.observe(selectedId)
+      return () => {
+        lab.engine.recorder.unobserve(selectedId)
+      }
+    }
   }, [selectedId, lab])
 
   useEffect(() => {
@@ -20,20 +25,37 @@ export function GraphPanel() {
     if (!canvas || !open) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    const w = canvas.width
-    const h = canvas.height
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    const displayWidth = canvas.clientWidth || 900
+    const displayHeight = canvas.clientHeight || 140
+
+    if (canvas.width !== Math.floor(displayWidth * dpr) || canvas.height !== Math.floor(displayHeight * dpr)) {
+      canvas.width = Math.floor(displayWidth * dpr)
+      canvas.height = Math.floor(displayHeight * dpr)
+    }
+
+    ctx.save()
+    ctx.scale(dpr, dpr)
+    const w = displayWidth
+    const h = displayHeight
+
     ctx.clearRect(0, 0, w, h)
     ctx.fillStyle = '#101826'
     ctx.fillRect(0, 0, w, h)
+
+    ctx.font = '11px ui-monospace, monospace'
+
     if (!selectedId) {
       ctx.fillStyle = '#8b9bb4'
       ctx.fillText('Selecciona un cuerpo para graficar.', 12, 22)
+      ctx.restore()
       return
     }
     const { t, y, n } = lab.engine.recorder.series(selectedId, channel as RecorderChannel)
     if (n < 2) {
       ctx.fillStyle = '#8b9bb4'
       ctx.fillText('Pulsa Play para registrar datos.', 12, 22)
+      ctx.restore()
       return
     }
     let min = Infinity
@@ -58,8 +80,8 @@ export function GraphPanel() {
     }
     ctx.stroke()
     ctx.fillStyle = '#8b9bb4'
-    ctx.font = '11px ui-monospace, monospace'
     ctx.fillText(`${CHANNEL_LABELS[channel as RecorderChannel]}  min ${min.toFixed(2)}  max ${max.toFixed(2)}`, 8, 14)
+    ctx.restore()
   }, [lab, selectedId, channel, simTime, open])
 
   if (!open) return null
@@ -79,7 +101,8 @@ export function GraphPanel() {
           </button>
         ))}
       </div>
-      <canvas ref={canvasRef} width={900} height={140} className="min-w-0 flex-1" />
+      <canvas ref={canvasRef} className="h-full min-w-0 flex-1" />
     </footer>
   )
 }
+

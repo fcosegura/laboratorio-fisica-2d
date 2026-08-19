@@ -84,3 +84,8 @@ export function expandAABB(box: AABB, margin: number): AABB {
 export function isFiniteAABB(box: AABB): boolean {
   return Number.isFinite(box.minX) && Number.isFinite(box.maxX)
 }
+
+export function intersectsAABB(a: AABB, b: AABB): boolean {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY
+}
+

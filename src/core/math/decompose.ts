@@ -5,12 +5,6 @@ import { ensureCCW, isConvex, polygonArea, removeDuplicateVertices } from './pol
 
 const EPS = 1e-9
 
-function key(a: Vec2, b: Vec2): string {
-  const ax = a.x < b.x || (a.x === b.x && a.y < b.y) ? a : b
-  const bx = ax === a ? b : a
-  return `${ax.x.toFixed(8)},${ax.y.toFixed(8)}|${bx.x.toFixed(8)},${bx.y.toFixed(8)}`
-}
-
 function samePoint(a: Vec2, b: Vec2): boolean {
   return Math.abs(a.x - b.x) < EPS && Math.abs(a.y - b.y) < EPS
 }
@@ -88,7 +82,6 @@ export function decomposePolygon(input: readonly Vec2[]): Vec2[][] {
     if (polygonArea(tri) > EPS) triangles.push(ensureCCW(tri))
   }
   if (triangles.length === 0) return [poly]
-  void key
   return mergeConvexParts(triangles)
 }
 

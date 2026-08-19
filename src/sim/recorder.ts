@@ -67,6 +67,11 @@ export class DataRecorder {
     this.tracks.delete(id)
   }
 
+  unobserveAll(): void {
+    this.tracks.clear()
+    this.tick = 0
+  }
+
   clear(): void {
     for (const t of this.tracks.values()) {
       for (const b of Object.values(t.buffers)) b.clear()

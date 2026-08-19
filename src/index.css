@@ -46,3 +46,13 @@ select {
   background: #2a364c;
   border-radius: 8px;
 }
+
+.field {
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid #2a364c;
+  background: #1b2536;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+

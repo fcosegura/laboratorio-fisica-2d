@@ -86,10 +86,12 @@ export function TimeBar() {
         <Btn
           onClick={() => {
             const blob = new Blob([lab.exportJson()], { type: 'application/json' })
+            const url = URL.createObjectURL(blob)
             const a = document.createElement('a')
-            a.href = URL.createObjectURL(blob)
+            a.href = url
             a.download = `${lab.engine.doc.meta.name.replace(/\s+/g, '-')}.json`
             a.click()
+            URL.revokeObjectURL(url)
           }}
         >
           Guardar
@@ -103,7 +105,13 @@ export function TimeBar() {
             onChange={(e) => {
               const file = e.target.files?.[0]
               if (!file) return
-              file.text().then((t) => lab.importJson(t))
+              file
+                .text()
+                .then((t) => lab.importJson(t))
+                .catch((err) => {
+                  console.error('Error al importar escena:', err)
+                  alert(`Error al importar escena: ${err instanceof Error ? err.message : String(err)}`)
+                })
               e.target.value = ''
             }}
           />

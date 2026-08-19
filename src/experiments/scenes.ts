@@ -1,4 +1,3 @@
-import { IdFactory } from '../core/ids.ts'
 import { getSolid } from '../materials/catalog.ts'
 import {
   DEFAULT_VIZ,
@@ -205,8 +204,7 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
   },
 ]
 
-void IdFactory
-
 export function experimentById(id: string): SceneDocument | null {
   return EXPERIMENTS.find((e) => e.id === id)?.build() ?? null
 }
+

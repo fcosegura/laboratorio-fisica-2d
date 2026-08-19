@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { SOLID_MATERIALS } from '../materials/catalog.ts'
 import { JOINT_KIND_META, type SceneJoint } from '../scene/document.ts'
 import { DEFAULT_SPRING_DAMPING, DEFAULT_SPRING_STIFFNESS } from '../scene/joints.ts'
+import { parseAndClamp, PROPERTY_DESCRIPTORS, type PropertyDescriptor } from '../scene/properties.ts'
 import type { BodyType, MassMode } from '../physics/ports.ts'
 
 export function Inspector() {
@@ -31,16 +33,19 @@ export function Inspector() {
             <Num
               label="x (m)"
               value={live?.x ?? body.x}
+              descriptor={PROPERTY_DESCRIPTORS.x}
               onChange={(v) => lab.commitPatch(body.id, { x: v })}
             />
             <Num
               label="y (m)"
               value={live?.y ?? body.y}
+              descriptor={PROPERTY_DESCRIPTORS.y}
               onChange={(v) => lab.commitPatch(body.id, { y: v })}
             />
             <Num
               label="θ (°)"
               value={((live?.angle ?? body.angle) * 180) / Math.PI}
+              descriptor={PROPERTY_DESCRIPTORS.angleDeg}
               onChange={(v) => lab.commitPatch(body.id, { angle: (v * Math.PI) / 180 })}
             />
             <Field label="Tipo">
@@ -81,7 +86,15 @@ export function Inspector() {
             <select
               className="field mb-1"
               value={body.massMode}
-              onChange={(e) => lab.commitPatch(body.id, { massMode: e.target.value as MassMode })}
+              onChange={(e) => {
+                const mode = e.target.value as MassMode
+                if (mode === 'explicit') {
+                  const initialMass = live?.mass && live.mass > 0 ? live.mass : (body.mass ?? 1)
+                  lab.commitPatch(body.id, { massMode: 'explicit', mass: initialMass })
+                } else {
+                  lab.commitPatch(body.id, { massMode: 'density' })
+                }
+              }}
             >
               <option value="density">Desde densidad</option>
               <option value="explicit">Explícita</option>
@@ -90,12 +103,14 @@ export function Inspector() {
               <Num
                 label="Densidad (kg/m²)"
                 value={body.density}
+                descriptor={PROPERTY_DESCRIPTORS.density}
                 onChange={(v) => lab.commitPatch(body.id, { density: v, massMode: 'density' })}
               />
             ) : (
               <Num
                 label="Masa (kg)"
                 value={body.mass ?? live?.mass ?? 1}
+                descriptor={PROPERTY_DESCRIPTORS.mass}
                 onChange={(v) => lab.commitPatch(body.id, { mass: v, massMode: 'explicit' })}
               />
             )}
@@ -105,30 +120,40 @@ export function Inspector() {
             </div>
           </Field>
           <div className="grid grid-cols-2 gap-2">
-            <Num label="Fricción" value={body.friction} onChange={(v) => lab.commitPatch(body.id, { friction: v })} />
+            <Num
+              label="Fricción"
+              value={body.friction}
+              descriptor={PROPERTY_DESCRIPTORS.friction}
+              onChange={(v) => lab.commitPatch(body.id, { friction: v })}
+            />
             <Num
               label="Restitución"
               value={body.restitution}
+              descriptor={PROPERTY_DESCRIPTORS.restitution}
               onChange={(v) => lab.commitPatch(body.id, { restitution: v })}
             />
             <Num
               label="vx (m/s)"
               value={live?.vx ?? body.vx}
+              descriptor={PROPERTY_DESCRIPTORS.vx}
               onChange={(v) => lab.commitPatch(body.id, { vx: v })}
             />
             <Num
               label="vy (m/s)"
               value={live?.vy ?? body.vy}
+              descriptor={PROPERTY_DESCRIPTORS.vy}
               onChange={(v) => lab.commitPatch(body.id, { vy: v })}
             />
             <Num
               label="ω (rad/s)"
               value={live?.omega ?? body.omega}
+              descriptor={PROPERTY_DESCRIPTORS.omega}
               onChange={(v) => lab.commitPatch(body.id, { omega: v })}
             />
             <Num
               label="Escala g"
               value={body.gravityScale}
+              descriptor={PROPERTY_DESCRIPTORS.gravityScale}
               onChange={(v) => lab.commitPatch(body.id, { gravityScale: v })}
             />
           </div>
@@ -174,9 +199,6 @@ export function Inspector() {
           </div>
         </div>
       )}
-      <style>{`
-        .field { width: 100%; border-radius: 6px; border: 1px solid #2a364c; background: #1b2536; padding: 4px 8px; font-size: 12px; }
-      `}</style>
     </aside>
   )
 }
@@ -206,6 +228,7 @@ function JointCard({ joint, bodyId }: { joint: SceneJoint; bodyId: string }) {
         <Num
           label="Longitud (m)"
           value={joint.restLength ?? 0}
+          descriptor={PROPERTY_DESCRIPTORS.restLength}
           onChange={(v) => lab.commitJointPatch(joint.id, { restLength: v })}
         />
       )}
@@ -214,11 +237,13 @@ function JointCard({ joint, bodyId }: { joint: SceneJoint; bodyId: string }) {
           <Num
             label="Rigidez"
             value={joint.stiffness ?? DEFAULT_SPRING_STIFFNESS}
+            descriptor={PROPERTY_DESCRIPTORS.stiffness}
             onChange={(v) => lab.commitJointPatch(joint.id, { stiffness: v })}
           />
           <Num
             label="Amortiguación"
             value={joint.damping ?? DEFAULT_SPRING_DAMPING}
+            descriptor={PROPERTY_DESCRIPTORS.damping}
             onChange={(v) => lab.commitJointPatch(joint.id, { damping: v })}
           />
         </div>
@@ -236,16 +261,58 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function Num({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function Num({
+  label,
+  value,
+  descriptor,
+  onChange,
+}: {
+  label: string
+  value: number
+  descriptor?: PropertyDescriptor
+  onChange: (v: number) => void
+}) {
+  const [localText, setLocalText] = useState<string | null>(null)
+
+  const displayValue = localText !== null ? localText : Number.isFinite(value) ? String(Number(value.toFixed(4))) : '0'
+
+  const commit = () => {
+    if (localText === null) return
+    const parsed = parseAndClamp(localText, descriptor)
+    setLocalText(null)
+    if (parsed !== null) {
+      onChange(parsed)
+    }
+  }
+
   return (
     <Field label={label}>
       <input
         className="field"
-        type="number"
-        step="any"
-        value={Number.isFinite(value) ? value : 0}
-        onChange={(e) => onChange(Number(e.target.value))}
+        type="text"
+        inputMode="decimal"
+        value={displayValue}
+        onFocus={() => setLocalText(Number.isFinite(value) ? String(Number(value.toFixed(4))) : '0')}
+        onChange={(e) => setLocalText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commit()
+            ;(e.target as HTMLInputElement).blur()
+          } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault()
+            const step = descriptor?.step ?? 0.1
+            const current = Number(displayValue) || value || 0
+            const next = e.key === 'ArrowUp' ? current + step : current - step
+            const clamped = parseAndClamp(String(next), descriptor)
+            if (clamped !== null) {
+              setLocalText(String(Number(clamped.toFixed(4))))
+              onChange(clamped)
+            }
+          }
+        }}
       />
     </Field>
   )
 }
+

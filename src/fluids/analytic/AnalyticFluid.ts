@@ -80,7 +80,7 @@ export class AnalyticFluidSolver {
     for (const region of regions) {
       const mat = getFluid(region.materialId)
       let displaced = 0
-      const contributions: { body: SceneBody; snap: BodySnapshot; poly: Vec2[]; area: number; c: Vec2 }[] = []
+      const contributions: { body: SceneBody; snap: BodySnapshot; originalPoly: Vec2[]; area: number; c: Vec2 }[] = []
 
       for (const body of bodies) {
         if (body.type !== 'dynamic') continue
@@ -93,7 +93,7 @@ export class AnalyticFluidSolver {
         const area = polygonArea(clipped)
         if (area < 1e-8) continue
         displaced += area
-        contributions.push({ body, snap, poly: clipped, area, c: polygonCentroid(clipped) })
+        contributions.push({ body, snap, originalPoly: poly, area, c: polygonCentroid(clipped) })
       }
 
       const width = Math.max(0.05, surfaceWidthAt(region.polygon, region.restSurfaceY))
@@ -107,7 +107,7 @@ export class AnalyticFluidSolver {
 
       for (const item of contributions) {
         // Reclip with the raised surface for a slightly better hydrostatic estimate.
-        let clipped = clipPolygon(item.poly, region.polygon)
+        let clipped = clipPolygon(item.originalPoly, region.polygon)
         clipped = clipHalfPlane(clipped, 0, 1, surfaceY)
         const area = polygonArea(clipped)
         if (area < 1e-8) continue

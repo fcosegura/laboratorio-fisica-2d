@@ -1,4 +1,5 @@
 import { IdFactory } from '../core/ids.ts'
+import { aabbFromBox, aabbFromCircle, aabbFromPoints, emptyAABB, intersectsAABB, type AABB } from '../core/math/aabb.ts'
 import { dist } from '../core/math/vec2.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import { inverseTransformPoint, transformPoint, type Transform } from '../core/math/transform.ts'
@@ -6,7 +7,6 @@ import { dragToForce, dragToImpulse, forceAnchorWorld } from '../interaction/for
 import { getSolid } from '../materials/catalog.ts'
 import {
   createCamera,
-  panCamera,
   screenToWorld,
   zoomAt,
   zoomToFit,
@@ -15,11 +15,13 @@ import {
 import type { Tool } from '../interaction/tools.ts'
 import { Tool as ToolId } from '../interaction/tools.ts'
 import type { InteractionState } from '../interaction/state.ts'
+import { reduceDown } from '../interaction/machine.ts'
 import { PixiRenderer } from '../render/PixiRenderer.ts'
 import {
   AddBodyCommand,
   AddFluidCommand,
   AddJointCommand,
+  BatchCommand,
   DuplicateBodyCommand,
   RemoveBodyCommand,
   RemoveJointCommand,
@@ -27,7 +29,8 @@ import {
   UpdateJointCommand,
 } from '../scene/commands.ts'
 import { History } from '../scene/history.ts'
-import { cloneDocument, emptyScene, GRAVITY_PRESETS, type SceneBody, type SceneDocument, type SceneJoint, type VizLayers } from '../scene/document.ts'
+import { emptyScene, type SceneBody, type SceneDocument, type SceneJoint, type VizLayers } from '../scene/document.ts'
+import { bodyToDesc } from '../scene/builder.ts'
 import { jointToDesc, reattachJoints, springParamsForMasses } from '../scene/joints.ts'
 import { parseDocument, serializeDocument } from '../scene/schema.ts'
 import { SimulationEngine } from '../sim/engine.ts'
@@ -129,7 +132,8 @@ export class LabRuntime {
     const onWheel = (e: WheelEvent) => this.onWheel(e)
     const onContext = (e: Event) => e.preventDefault()
     const onDbl = (e: MouseEvent) => this.onDblClick(e)
-    const onKey = (e: KeyboardEvent) => this.onKey(e)
+    const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e)
+    const onKeyUp = (e: KeyboardEvent) => this.onKeyUp(e)
     const onResize = () => this.resize()
     canvas.addEventListener('pointerdown', onPointer)
     canvas.addEventListener('pointermove', onPointer)
@@ -138,7 +142,8 @@ export class LabRuntime {
     canvas.addEventListener('wheel', onWheel, { passive: false })
     canvas.addEventListener('contextmenu', onContext)
     canvas.addEventListener('dblclick', onDbl)
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
     window.addEventListener('resize', onResize)
     const ro = new ResizeObserver(() => this.resize())
     ro.observe(canvas.parentElement ?? canvas)
@@ -150,7 +155,8 @@ export class LabRuntime {
       canvas.removeEventListener('wheel', onWheel)
       canvas.removeEventListener('contextmenu', onContext)
       canvas.removeEventListener('dblclick', onDbl)
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('resize', onResize)
       ro.disconnect()
     }
@@ -212,11 +218,15 @@ export class LabRuntime {
       if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, screen)
       if (this.pointers.size === 2 && this.pinch) {
         const pts = [...this.pointers.values()]
+        const mid = { x: (pts[0]!.x + pts[1]!.x) / 2, y: (pts[0]!.y + pts[1]!.y) / 2 }
         const d = Math.hypot(pts[0]!.x - pts[1]!.x, pts[0]!.y - pts[1]!.y)
-        this.camera = {
-          ...this.camera,
-          pixelsPerMeter: this.pinch.ppm * (d / (this.pinch.dist || 1)),
-        }
+        const factor = d / (this.pinch.dist || 1)
+        this.camera = zoomAt(
+          { ...this.camera, pixelsPerMeter: this.pinch.ppm },
+          mid,
+          this.view(),
+          factor,
+        )
         return
       }
       this.onMove(e, world, screen)
@@ -228,84 +238,32 @@ export class LabRuntime {
   }
 
   private onDown(e: PointerEvent, world: Vec2, screen: Vec2): void {
-    const tool = this.tool()
-    if (this.state.kind === 'joining' && tool !== 'joint') this.state = { kind: 'idle' }
-    const space = this.store?.getState().spaceHeld
-    if (e.button === 1 || e.button === 2 || tool === 'pan' || space) {
-      this.state = { kind: 'panning', startScreen: screen, origX: this.camera.x, origY: this.camera.y }
-      return
-    }
     const hit = this.engine.bodyAt(world.x, world.y)
+    const hitDynamic = this.hitDynamic(world.x, world.y)
+    const res = reduceDown(this.state, {
+      tool: this.tool(),
+      world,
+      screen,
+      hit,
+      hitDynamic,
+      shiftKey: e.shiftKey,
+      button: e.button,
+      spaceHeld: this.store?.getState().spaceHeld,
+      camera: { x: this.camera.x, y: this.camera.y },
+      poseOf: (id) => this.poseOf(id),
+      bodyOf: (id) => this.engine.doc.bodies.find((b) => b.id === id),
+    })
 
-    if (tool === 'select') {
-      if (hit) {
-        this.selected = e.shiftKey ? [...new Set([...this.selected, hit])] : [hit]
-        const body = this.engine.doc.bodies.find((b) => b.id === hit)!
-        this.state = {
-          kind: 'dragging',
-          bodyId: hit,
-          local: { x: world.x - body.x, y: world.y - body.y },
-          startWorld: world,
-          orig: { x: body.x, y: body.y, angle: body.angle },
-        }
+    this.state = res.state
+    if (res.selected !== undefined) {
+      if (e.shiftKey && this.tool() === 'select' && res.selected.length) {
+        this.selected = [...new Set([...this.selected, ...res.selected])]
       } else {
-        this.selected = []
-        this.state = { kind: 'selecting', start: world, current: world }
+        this.selected = res.selected
       }
-      this.pushUi()
-      return
     }
-
-    if (tool === 'force') {
-      const bodyId = this.hitDynamic(world.x, world.y)
-      if (!bodyId) return
-      this.selected = [bodyId]
-      const pose = this.poseOf(bodyId)
-      this.state = {
-        kind: 'applyingForce',
-        bodyId,
-        local: inverseTransformPoint({ x: 0, y: 0 }, world, pose),
-        current: world,
-        mode: e.shiftKey ? 'force' : 'impulse',
-      }
-      if (e.shiftKey) this.ensurePlaying()
-      this.pushUi()
-      return
-    }
-
-    if (tool === 'measure') {
-      this.state = { kind: 'measuring', start: world, current: world }
-      return
-    }
-
-    if (tool === 'joint') {
-      if (!hit) return
-      this.selected = [hit]
-      const pose = this.poseOf(hit)
-      const local = inverseTransformPoint({ x: 0, y: 0 }, world, pose)
-      this.state = {
-        kind: 'joining',
-        bodyA: hit,
-        anchorA: { x: local.x, y: local.y },
-        current: { x: world.x, y: world.y },
-      }
-      this.pushUi()
-      return
-    }
-
-    if (tool === 'polygon') {
-      if (this.state.kind === 'creating' && this.state.tool === 'polygon') {
-        this.state.points = [...(this.state.points ?? []), world]
-        this.state.current = world
-      } else {
-        this.state = { kind: 'creating', tool: 'polygon', start: world, current: world, points: [world] }
-      }
-      return
-    }
-
-    if (tool === 'circle' || tool === 'rect' || tool === 'line' || tool === 'fluid') {
-      this.state = { kind: 'creating', tool, start: world, current: world }
-    }
+    if (res.ensurePlaying) this.ensurePlaying()
+    if (res.pushUi) this.pushUi()
   }
 
   private onMove(_e: PointerEvent, world: Vec2, screen: Vec2): void {
@@ -330,7 +288,6 @@ export class LabRuntime {
           ]
         }
       } else {
-        this.patchBody(s.bodyId, { x, y })
         this.engine.world?.setTransform(s.bodyId, x, y, s.orig.angle)
         this.engine.world?.writeBodies(this.engine.curr)
       }
@@ -347,14 +304,42 @@ export class LabRuntime {
     }
     if (s.kind === 'measuring' || s.kind === 'selecting') {
       this.state = { ...s, current: world }
+      return
     }
     if (s.kind === 'joining') {
       this.state = { ...s, current: world }
     }
   }
 
+  private bodyBounds(b: SceneBody): AABB {
+    if (b.shape.kind === 'circle') return aabbFromCircle(b.x, b.y, b.shape.radius)
+    if (b.shape.kind === 'box') return aabbFromBox({ x: b.x, y: b.y, angle: b.angle }, b.shape.hx, b.shape.hy)
+    if (b.shape.kind === 'convex') {
+      return aabbFromPoints(b.shape.vertices.map((p) => ({ x: p.x + b.x, y: p.y + b.y })))
+    }
+    return emptyAABB()
+  }
+
   private onUp(_e: PointerEvent, world: Vec2): void {
     const s = this.state
+    if (s.kind === 'selecting') {
+      const minX = Math.min(s.start.x, world.x)
+      const maxX = Math.max(s.start.x, world.x)
+      const minY = Math.min(s.start.y, world.y)
+      const maxY = Math.max(s.start.y, world.y)
+      const selectBox: AABB = { minX, maxX, minY, maxY }
+      const found: string[] = []
+      for (const b of this.engine.doc.bodies) {
+        const box = this.bodyBounds(b)
+        if (intersectsAABB(selectBox, box)) {
+          found.push(b.id)
+        }
+      }
+      this.selected = found
+      this.state = { kind: 'idle' }
+      this.pushUi()
+      return
+    }
     if (s.kind === 'creating') {
       if (s.tool === 'polygon') {
         return
@@ -381,8 +366,14 @@ export class LabRuntime {
       if (!this.engine.clock.playing) {
         const body = this.engine.doc.bodies.find((b) => b.id === s.bodyId)
         if (body) {
+          const finalX = world.x - s.local.x
+          const finalY = world.y - s.local.y
           this.history.apply(
-            new UpdateBodyCommand(s.bodyId, { x: body.x, y: body.y, vx: 0, vy: 0, omega: 0 }),
+            new UpdateBodyCommand(
+              s.bodyId,
+              { x: finalX, y: finalY, vx: 0, vy: 0, omega: 0 },
+              { x: s.orig.x, y: s.orig.y, vx: 0, vy: 0, omega: 0 },
+            ),
           )
         }
       }
@@ -397,7 +388,12 @@ export class LabRuntime {
     if (this.tool() === 'polygon' && this.state.kind === 'creating') {
       const { start, points } = this.state
       this.state = { kind: 'idle' }
-      this.commitCreate('polygon', start, this.worldOf(e), points)
+      const cleanPoints = (points ?? []).filter((p, i, arr) => {
+        if (i === 0) return true
+        const prev = arr[i - 1]!
+        return Math.hypot(p.x - prev.x, p.y - prev.y) > 0.05
+      })
+      this.commitCreate('polygon', start, this.worldOf(e), cleanPoints)
     }
   }
 
@@ -414,10 +410,10 @@ export class LabRuntime {
   }
 
   private hitDynamic(x: number, y: number): string | null {
-    return this.engine.bodyAt(x, y, (id) => {
+    return this.engine.bodyAt(x, y, (id, body) => {
+      if (body) return body.type === 'dynamic'
       const live = this.engine.world?.getBody(id)?.type
-      if (live) return live === 'dynamic'
-      return this.engine.doc.bodies.find((b) => b.id === id)?.type === 'dynamic'
+      return live === 'dynamic'
     })
   }
 
@@ -440,7 +436,6 @@ export class LabRuntime {
 
   private commitCreate(tool: Tool, a: Vec2, b: Vec2, points?: Vec2[]): void {
     const matId = this.store?.getState().materialId ?? 'wood'
-    const mat = getSolid(matId)
     const id = this.ids.next('body')
     if (tool === 'circle') {
       const r = Math.max(0.08, dist(a, b))
@@ -492,7 +487,6 @@ export class LabRuntime {
         }),
       )
     }
-    void mat
   }
 
   private makeBody(
@@ -533,25 +527,7 @@ export class LabRuntime {
 
   addBody(body: SceneBody): void {
     this.history.apply(new AddBodyCommand(body))
-    this.engine.world?.addBody({
-      id: body.id,
-      type: body.type,
-      translation: { x: body.x, y: body.y },
-      rotation: body.angle,
-      gravityScale: body.gravityScale,
-      linearDamping: body.linearDamping,
-      angularDamping: body.angularDamping,
-      ccd: body.ccd,
-      lockRotation: body.lockRotation,
-      colliders: [
-        {
-          shape: body.shape,
-          density: body.density,
-          friction: body.friction,
-          restitution: body.restitution,
-        },
-      ],
-    })
+    this.engine.world?.addBody(bodyToDesc(body))
     this.selected = [body.id]
     this.engine.world?.writeBodies(this.engine.curr)
     this.pushUi()
@@ -582,29 +558,7 @@ export class LabRuntime {
     ]
     if (rebuildKeys.some((k) => k in patch)) {
       this.engine.world.removeBody(id)
-      this.engine.world.addBody({
-        id: body.id,
-        type: body.type,
-        translation: { x: body.x, y: body.y },
-        rotation: body.angle,
-        linvel: { x: body.vx, y: body.vy },
-        angvel: body.omega,
-        gravityScale: body.gravityScale,
-        linearDamping: body.linearDamping,
-        angularDamping: body.angularDamping,
-        ccd: body.ccd,
-        lockRotation: body.lockRotation,
-        colliders: [
-          {
-            shape: body.shape,
-            ...(body.massMode === 'explicit' && body.mass
-              ? { mass: body.mass }
-              : { density: body.density }),
-            friction: body.friction,
-            restitution: body.restitution,
-          },
-        ],
-      })
+      this.engine.world.addBody(bodyToDesc(body))
       reattachJoints(this.engine.world, this.engine.doc, id)
     } else {
       if (patch.x !== undefined || patch.y !== undefined || patch.angle !== undefined) {
@@ -620,9 +574,13 @@ export class LabRuntime {
   }
 
   deleteSelected(): void {
+    const commands = []
     for (const id of this.selected) {
-      this.history.apply(new RemoveBodyCommand(id))
+      commands.push(new RemoveBodyCommand(id))
       this.engine.world?.removeBody(id)
+    }
+    if (commands.length) {
+      this.history.apply(new BatchCommand(commands))
     }
     this.selected = []
     this.pushUi()
@@ -635,6 +593,7 @@ export class LabRuntime {
 
   duplicateSelected(): void {
     const created: string[] = []
+    const commands = []
     for (const id of this.selected) {
       const src = this.engine.doc.bodies.find((b) => b.id === id)
       if (!src) continue
@@ -645,27 +604,12 @@ export class LabRuntime {
         y: src.y + 0.4,
         name: `${src.name} copia`,
       }
-      this.history.apply(new DuplicateBodyCommand(id, copy))
-      this.engine.world?.addBody({
-        id: copy.id,
-        type: copy.type,
-        translation: { x: copy.x, y: copy.y },
-        rotation: copy.angle,
-        gravityScale: copy.gravityScale,
-        linearDamping: copy.linearDamping,
-        angularDamping: copy.angularDamping,
-        ccd: copy.ccd,
-        lockRotation: copy.lockRotation,
-        colliders: [
-          {
-            shape: copy.shape,
-            density: copy.density,
-            friction: copy.friction,
-            restitution: copy.restitution,
-          },
-        ],
-      })
+      commands.push(new DuplicateBodyCommand(id, copy))
+      this.engine.world?.addBody(bodyToDesc(copy))
       created.push(copy.id)
+    }
+    if (commands.length) {
+      this.history.apply(new BatchCommand(commands))
     }
     this.selected = created
     this.pushUi()
@@ -730,6 +674,13 @@ export class LabRuntime {
     this.history.clear()
     this.selected = []
     this.camera = { ...doc.camera }
+    const allIds = [
+      ...doc.bodies.map((b) => b.id),
+      ...doc.joints.map((j) => j.id),
+      ...doc.fluidRegions.map((f) => f.id),
+    ]
+    this.ids.seedMax(allIds)
+    this.store?.setState({ viz: { ...doc.visualization } })
     await this.engine.reload(doc)
     this.pushUi()
   }
@@ -753,27 +704,30 @@ export class LabRuntime {
     await this.loadDocument(parseDocument(text))
   }
 
-  private onKey(e: KeyboardEvent): void {
+  private onKeyDown(e: KeyboardEvent): void {
     const tag = (e.target as HTMLElement | null)?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
     const store = this.store
     if (!store) return
-    if (e.code === 'Space' && e.repeat) return
-    if (e.key === ' ') {
-      if (this.engine.clock.playing) this.engine.pause()
-      else this.engine.play()
-      this.pushUi()
-      e.preventDefault()
+
+    if (e.code === 'Space') {
+      store.setState({ spaceHeld: true })
+      if (!e.repeat) {
+        if (this.engine.clock.playing) this.engine.pause()
+        else this.engine.play()
+        this.pushUi()
+        e.preventDefault()
+      }
     }
     if (e.key === '.') this.engine.stepOnce()
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault()
       if (e.shiftKey) this.history.redo()
       else this.history.undo()
       void this.engine.reload(this.engine.doc)
     }
     if (e.key === 'Delete' || e.key === 'Backspace') this.deleteSelected()
-    if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
       e.preventDefault()
       this.duplicateSelected()
     }
@@ -799,6 +753,12 @@ export class LabRuntime {
       const { start, current, points } = this.state
       this.state = { kind: 'idle' }
       this.commitCreate('polygon', start, current, points)
+    }
+  }
+
+  private onKeyUp(e: KeyboardEvent): void {
+    if (e.code === 'Space') {
+      this.store?.setState({ spaceHeld: false })
     }
   }
 
@@ -835,10 +795,5 @@ export class LabRuntime {
     })
   }
 }
-
-void panCamera
-void cloneDocument
-void GRAVITY_PRESETS
-void IdFactory
 
 export type { VizLayers }

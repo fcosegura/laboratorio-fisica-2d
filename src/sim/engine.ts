@@ -5,7 +5,7 @@ import { RapierWorld } from '../physics/adapters/rapier/RapierWorld.ts'
 import { loadRapier } from '../physics/adapters/rapier/loadRapier.ts'
 import type { BodySnapshot, PhysicsContact, PhysicsWorld } from '../physics/ports.ts'
 import { buildWorld } from '../scene/builder.ts'
-import { cloneDocument, type SceneDocument } from '../scene/document.ts'
+import { cloneDocument, type SceneBody, type SceneDocument } from '../scene/document.ts'
 import { pickBody } from '../scene/picking.ts'
 import { AnalyticFluidSolver } from '../fluids/analytic/AnalyticFluid.ts'
 import { Clock } from './clock.ts'
@@ -27,11 +27,14 @@ export class SimulationEngine {
   readonly fluids = new AnalyticFluidSolver()
   prev: BodySnapshot[] = []
   curr: BodySnapshot[] = []
+  private prevMap = new Map<BodyId, BodySnapshot>()
+  private currMap = new Map<BodyId, BodySnapshot>()
   contacts: PhysicsContact[] = []
   appliedForces: AppliedForce[] = []
   /** Forces re-applied every physics step (sustained force tool / grab). */
   persistentForces: AppliedForce[] = []
   timings = { physics: 0, fluids: 0, steps: 0 }
+  private reloadQueue: Promise<void> = Promise.resolve()
 
   constructor(doc: SceneDocument) {
     this.doc = cloneDocument(doc)
@@ -54,20 +57,31 @@ export class SimulationEngine {
     this.recorder.clear()
     this.prev = []
     this.curr = []
+    this.prevMap.clear()
+    this.currMap.clear()
     this.world.writeBodies(this.curr)
+    for (const b of this.curr) this.currMap.set(b.id, b)
     this.prev = this.curr.map((b) => ({ ...b }))
+    for (const b of this.prev) this.prevMap.set(b.id, b)
     this.contacts = []
+    this.appliedForces.length = 0
   }
 
   async reset(): Promise<void> {
-    const R = await loadRapier()
-    this.rebuild(R)
+    this.reloadQueue = this.reloadQueue.then(async () => {
+      const R = await loadRapier()
+      this.rebuild(R)
+    })
+    return this.reloadQueue
   }
 
   async reload(doc: SceneDocument): Promise<void> {
-    this.doc = cloneDocument(doc)
-    const R = await loadRapier()
-    this.rebuild(R)
+    this.reloadQueue = this.reloadQueue.then(async () => {
+      this.doc = cloneDocument(doc)
+      const R = await loadRapier()
+      this.rebuild(R)
+    })
+    return this.reloadQueue
   }
 
   play(): void {
@@ -88,9 +102,13 @@ export class SimulationEngine {
     this.world?.setGravity(g)
   }
 
-  private physicsStep(): void {
+  private physicsStep(stepTime = this.clock.simTime): void {
     if (!this.world) return
+    this.appliedForces.length = 0
     this.prev = this.curr.map((b) => ({ ...b }))
+    this.prevMap.clear()
+    for (const b of this.prev) this.prevMap.set(b.id, b)
+
     for (const f of this.persistentForces) {
       this.world.applyForce(f.bodyId, f.fx, f.fy, { x: f.x, y: f.y })
     }
@@ -100,8 +118,11 @@ export class SimulationEngine {
     this.world.step(PHYSICS_DT)
     const t2 = performance.now()
     this.world.writeBodies(this.curr)
+    this.currMap.clear()
+    for (const b of this.curr) this.currMap.set(b.id, b)
+
     this.world.writeContacts(this.contacts)
-    this.recorder.sample(this.clock.simTime, PHYSICS_DT, this.doc.world.gravity.y, this.curr)
+    this.recorder.sample(stepTime, PHYSICS_DT, this.doc.world.gravity.y, this.curr)
     this.timings.fluids = t1 - t0
     this.timings.physics = t2 - t1
   }
@@ -109,19 +130,22 @@ export class SimulationEngine {
   advance(frameDt: number): void {
     const n = this.clock.advance(frameDt)
     this.timings.steps = n
-    for (let i = 0; i < n; i++) this.physicsStep()
+    const startSimTime = this.clock.simTime - n * PHYSICS_DT
+    for (let i = 0; i < n; i++) {
+      this.physicsStep(startSimTime + (i + 1) * PHYSICS_DT)
+    }
   }
 
   stepOnce(): void {
     this.clock.playing = false
     this.clock.stepOnce()
-    this.physicsStep()
+    this.physicsStep(this.clock.simTime)
   }
 
   interpolated(id: BodyId): BodySnapshot | null {
-    const a = this.prev.find((b) => b.id === id)
-    const b = this.curr.find((c) => c.id === id)
+    const b = this.currMap.get(id) ?? this.curr.find((c) => c.id === id)
     if (!b) return null
+    const a = this.prevMap.get(id) ?? this.prev.find((p) => p.id === id)
     if (!a || this.clock.alpha >= 1 || !this.clock.playing) return b
     const t = this.clock.alpha
     let dAngle = b.angle - a.angle
@@ -135,14 +159,19 @@ export class SimulationEngine {
     }
   }
 
-  bodyAt(x: number, y: number, predicate?: (id: BodyId) => boolean): BodyId | null {
-    const hit = this.world?.pointHit(x, y, predicate ? { predicate } : undefined)?.bodyId ?? null
+  bodyAt(x: number, y: number, predicate?: (id: BodyId, body?: SceneBody) => boolean): BodyId | null {
+    const hit = this.world?.pointHit(x, y, predicate ? { predicate: (id) => predicate(id) } : undefined)?.bodyId ?? null
     if (hit) return hit
-    const poses = this.doc.bodies.map((b) => {
-      const live = this.world?.getBody(b.id)
-      return live ? { id: b.id, x: live.x, y: live.y, angle: live.angle } : b
-    })
-    return pickBody(this.doc.bodies, x, y, poses, (body) => (predicate ? predicate(body.id) : true))
+    return pickBody(
+      this.doc.bodies,
+      x,
+      y,
+      (id) => {
+        const live = this.world?.getBody(id)
+        return live ? { x: live.x, y: live.y, angle: live.angle } : undefined
+      },
+      (body) => (predicate ? predicate(body.id, body) : true),
+    )
   }
 
   applyImpulse(id: BodyId, jx: number, jy: number, point: Vec2): void {
@@ -151,3 +180,4 @@ export class SimulationEngine {
     this.world?.writeBodies(this.curr)
   }
 }
+

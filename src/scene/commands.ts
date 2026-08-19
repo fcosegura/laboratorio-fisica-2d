@@ -5,6 +5,21 @@ export interface Command {
   invert(doc: SceneDocument): void
 }
 
+export class BatchCommand implements Command {
+  commands: Command[]
+  constructor(commands: Command[]) {
+    this.commands = commands
+  }
+  apply(doc: SceneDocument): void {
+    for (const cmd of this.commands) cmd.apply(doc)
+  }
+  invert(doc: SceneDocument): void {
+    for (let i = this.commands.length - 1; i >= 0; i--) {
+      this.commands[i]!.invert(doc)
+    }
+  }
+}
+
 export class AddBodyCommand implements Command {
   body: SceneBody
   constructor(body: SceneBody) {
@@ -22,11 +37,13 @@ export class RemoveBodyCommand implements Command {
   id: string
   stored: SceneBody | null = null
   storedJoints: SceneJoint[] = []
+  index = -1
   constructor(id: string) {
     this.id = id
   }
   apply(doc: SceneDocument): void {
     const i = doc.bodies.findIndex((b) => b.id === this.id)
+    this.index = i
     this.stored = i >= 0 ? structuredClone(doc.bodies[i]!) : null
     this.storedJoints = doc.joints.filter((j) => j.bodyA === this.id || j.bodyB === this.id).map((j) => structuredClone(j))
     if (i >= 0) doc.bodies.splice(i, 1)
@@ -36,7 +53,10 @@ export class RemoveBodyCommand implements Command {
     }
   }
   invert(doc: SceneDocument): void {
-    if (this.stored) doc.bodies.push(structuredClone(this.stored))
+    if (this.stored) {
+      const insertAt = this.index >= 0 && this.index <= doc.bodies.length ? this.index : doc.bodies.length
+      doc.bodies.splice(insertAt, 0, structuredClone(this.stored))
+    }
     for (const joint of this.storedJoints) {
       if (!doc.joints.some((j) => j.id === joint.id)) doc.joints.push(structuredClone(joint))
     }
@@ -46,20 +66,27 @@ export class RemoveBodyCommand implements Command {
 export class UpdateBodyCommand implements Command {
   id: string
   patch: Partial<SceneBody>
-  prev: SceneBody | null = null
-  constructor(id: string, patch: Partial<SceneBody>) {
+  prev: Partial<SceneBody> | null = null
+  constructor(id: string, patch: Partial<SceneBody>, explicitPrev?: Partial<SceneBody>) {
     this.id = id
     this.patch = patch
+    if (explicitPrev) {
+      this.prev = structuredClone(explicitPrev)
+    }
   }
   apply(doc: SceneDocument): void {
     const body = doc.bodies.find((b) => b.id === this.id)
     if (!body) return
-    this.prev = structuredClone(body)
+    if (!this.prev) {
+      this.prev = structuredClone(body)
+    }
     Object.assign(body, this.patch)
   }
   invert(doc: SceneDocument): void {
-    const i = doc.bodies.findIndex((b) => b.id === this.id)
-    if (i >= 0 && this.prev) doc.bodies[i] = structuredClone(this.prev)
+    const body = doc.bodies.find((b) => b.id === this.id)
+    if (body && this.prev) {
+      Object.assign(body, this.prev)
+    }
   }
 }
 
@@ -79,16 +106,21 @@ export class AddFluidCommand implements Command {
 export class RemoveFluidCommand implements Command {
   id: string
   stored: SceneFluidRegion | null = null
+  index = -1
   constructor(id: string) {
     this.id = id
   }
   apply(doc: SceneDocument): void {
     const i = doc.fluidRegions.findIndex((r) => r.id === this.id)
+    this.index = i
     this.stored = i >= 0 ? structuredClone(doc.fluidRegions[i]!) : null
     if (i >= 0) doc.fluidRegions.splice(i, 1)
   }
   invert(doc: SceneDocument): void {
-    if (this.stored) doc.fluidRegions.push(structuredClone(this.stored))
+    if (this.stored && !doc.fluidRegions.some((r) => r.id === this.stored!.id)) {
+      const insertAt = this.index >= 0 && this.index <= doc.fluidRegions.length ? this.index : doc.fluidRegions.length
+      doc.fluidRegions.splice(insertAt, 0, structuredClone(this.stored))
+    }
   }
 }
 
@@ -122,17 +154,20 @@ export class AddJointCommand implements Command {
 export class RemoveJointCommand implements Command {
   id: string
   stored: SceneJoint | null = null
+  index = -1
   constructor(id: string) {
     this.id = id
   }
   apply(doc: SceneDocument): void {
     const i = doc.joints.findIndex((j) => j.id === this.id)
+    this.index = i
     this.stored = i >= 0 ? structuredClone(doc.joints[i]!) : null
     if (i >= 0) doc.joints.splice(i, 1)
   }
   invert(doc: SceneDocument): void {
     if (this.stored && !doc.joints.some((j) => j.id === this.stored!.id)) {
-      doc.joints.push(structuredClone(this.stored))
+      const insertAt = this.index >= 0 && this.index <= doc.joints.length ? this.index : doc.joints.length
+      doc.joints.splice(insertAt, 0, structuredClone(this.stored))
     }
   }
 }
@@ -140,19 +175,27 @@ export class RemoveJointCommand implements Command {
 export class UpdateJointCommand implements Command {
   id: string
   patch: Partial<SceneJoint>
-  prev: SceneJoint | null = null
-  constructor(id: string, patch: Partial<SceneJoint>) {
+  prev: Partial<SceneJoint> | null = null
+  constructor(id: string, patch: Partial<SceneJoint>, explicitPrev?: Partial<SceneJoint>) {
     this.id = id
     this.patch = patch
+    if (explicitPrev) {
+      this.prev = structuredClone(explicitPrev)
+    }
   }
   apply(doc: SceneDocument): void {
     const joint = doc.joints.find((j) => j.id === this.id)
     if (!joint) return
-    this.prev = structuredClone(joint)
+    if (!this.prev) {
+      this.prev = structuredClone(joint)
+    }
     Object.assign(joint, this.patch)
   }
   invert(doc: SceneDocument): void {
-    const i = doc.joints.findIndex((j) => j.id === this.id)
-    if (i >= 0 && this.prev) doc.joints[i] = structuredClone(this.prev)
+    const joint = doc.joints.find((j) => j.id === this.id)
+    if (joint && this.prev) {
+      Object.assign(joint, this.prev)
+    }
   }
 }
+

@@ -23,6 +23,18 @@ export class IdFactory {
   reset(n = 0): void {
     this.n = n
   }
+
+  seedMax(ids: string[]): void {
+    for (const id of ids) {
+      const match = id.match(/:(\d+)$/)
+      if (match && match[1]) {
+        const num = Number.parseInt(match[1], 10)
+        if (Number.isFinite(num) && num > this.n) {
+          this.n = num
+        }
+      }
+    }
+  }
 }
 
 export function asBodyId(id: string): BodyId {

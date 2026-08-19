@@ -14,7 +14,7 @@ import type { SceneBody, SceneDocument, VizLayers } from '../scene/document.ts'
 import { jointAnchorWorld } from '../scene/joints.ts'
 import type { AppliedForce, SimulationEngine } from '../sim/engine.ts'
 import type { InteractionState } from '../interaction/state.ts'
-import { clipHalfPlane, polygonCentroid } from '../core/math/polygon.ts'
+import { clipHalfPlane } from '../core/math/polygon.ts'
 import { PHYSICS_DT } from '../core/constants.ts'
 
 const BG = 0x0c121c
@@ -27,6 +27,12 @@ const GRAV = 0xe24b8d
 const CONTACT = 0xff6b6b
 const JOINT = 0xc4b5fd
 
+function gridStep(ppm: number): number {
+  if (ppm > 40) return 1
+  if (ppm > 16) return 2
+  return 5
+}
+
 function bodyColor(body: SceneBody): number {
   return body.color ?? getSolid(body.materialId).color
 }
@@ -35,22 +41,50 @@ function drawShape(g: Graphics, body: SceneBody, color: number, alpha = 1): void
   const s = body.shape
   g.clear()
   if (s.kind === 'circle') {
-    g.circle(0, 0, s.radius).fill({ color, alpha })
+    g.circle(0, 0, s.radius).fill({ color, alpha }).stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
     g.moveTo(0, 0).lineTo(s.radius, 0).stroke({ color: 0xffffff, alpha: 0.35, width: 0.04 })
   } else if (s.kind === 'box') {
-    g.rect(-s.hx, -s.hy, s.hx * 2, s.hy * 2).fill({ color, alpha })
+    g.rect(-s.hx, -s.hy, s.hx * 2, s.hy * 2).fill({ color, alpha }).stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
   } else if (s.kind === 'capsule') {
-    g.roundRect(-s.radius, -s.halfHeight - s.radius, s.radius * 2, (s.halfHeight + s.radius) * 2, s.radius).fill({
-      color,
-      alpha,
-    })
+    g.roundRect(-s.radius, -s.halfHeight - s.radius, s.radius * 2, (s.halfHeight + s.radius) * 2, s.radius)
+      .fill({ color, alpha })
+      .stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
   } else if (s.kind === 'convex') {
     const pts = s.vertices.flatMap((p) => [p.x, p.y])
-    if (pts.length >= 6) g.poly(pts).fill({ color, alpha })
+    if (pts.length >= 6) {
+      g.poly(pts).fill({ color, alpha }).stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
+    }
+  } else if (s.kind === 'polyline') {
+    const pts = s.vertices.flatMap((p) => [p.x, p.y])
+    if (pts.length >= 4) {
+      g.poly(pts).stroke({ color, width: 0.06, alpha })
+    }
   } else if (s.kind === 'segment') {
     g.moveTo(s.a.x, s.a.y).lineTo(s.b.x, s.b.y).stroke({ color, width: 0.08, alpha })
   }
-  g.stroke({ color: 0x000000, alpha: 0.35, width: 0.03 })
+}
+
+function drawSelectionHighlight(g: Graphics, body: SceneBody): void {
+  const s = body.shape
+  if (s.kind === 'circle') {
+    g.circle(0, 0, s.radius).stroke({ color: SELECT, width: 0.06, alpha: 1 })
+  } else if (s.kind === 'box') {
+    g.rect(-s.hx, -s.hy, s.hx * 2, s.hy * 2).stroke({ color: SELECT, width: 0.06, alpha: 1 })
+  } else if (s.kind === 'capsule') {
+    g.roundRect(-s.radius, -s.halfHeight - s.radius, s.radius * 2, (s.halfHeight + s.radius) * 2, s.radius).stroke({
+      color: SELECT,
+      width: 0.06,
+      alpha: 1,
+    })
+  } else if (s.kind === 'convex') {
+    const pts = s.vertices.flatMap((p) => [p.x, p.y])
+    if (pts.length >= 6) g.poly(pts).stroke({ color: SELECT, width: 0.06, alpha: 1 })
+  } else if (s.kind === 'polyline') {
+    const pts = s.vertices.flatMap((p) => [p.x, p.y])
+    if (pts.length >= 4) g.poly(pts).stroke({ color: SELECT, width: 0.08, alpha: 1 })
+  } else if (s.kind === 'segment') {
+    g.moveTo(s.a.x, s.a.y).lineTo(s.b.x, s.b.y).stroke({ color: SELECT, width: 0.1, alpha: 1 })
+  }
 }
 
 export class PixiRenderer {
@@ -62,11 +96,7 @@ export class PixiRenderer {
   overlay = new Graphics()
   labels = new Container()
   private bodyGfx = new Map<string, Graphics>()
-  private labelStyle = new TextStyle({
-    fill: '#e8eef7',
-    fontSize: 12,
-    fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-  })
+  private labelStyles = new Map<string, TextStyle>()
   view = { width: 1, height: 1, dpr: 1 }
   lastDrawMs = 0
 
@@ -82,6 +112,14 @@ export class PixiRenderer {
       preference: 'webgl',
     })
     this.app = app
+    this.world = new Container()
+    this.grid = new Graphics()
+    this.fluids = new Graphics()
+    this.bodiesLayer = new Container()
+    this.overlay = new Graphics()
+    this.labels = new Container()
+    this.bodyGfx.clear()
+
     this.world.addChild(this.grid, this.fluids, this.bodiesLayer, this.overlay)
     app.stage.addChild(this.world)
     app.stage.addChild(this.labels)
@@ -123,7 +161,7 @@ export class PixiRenderer {
   ): void {
     const t0 = performance.now()
     const app = this.app
-    if (!app) return
+    if (!app || this.world.destroyed) return
     const { width, height } = this.view
     this.world.position.set(width / 2, height / 2)
     this.world.scale.set(cam.pixelsPerMeter, -cam.pixelsPerMeter)
@@ -140,13 +178,14 @@ export class PixiRenderer {
   private drawGrid(cam: Camera): void {
     const g = this.grid
     g.clear()
-    const halfW = this.view.width / (2 * cam.pixelsPerMeter)
-    const halfH = this.view.height / (2 * cam.pixelsPerMeter)
-    const minX = cam.x - halfW
-    const maxX = cam.x + halfW
-    const minY = cam.y - halfH
-    const maxY = cam.y + halfH
-    const step = cam.pixelsPerMeter > 40 ? 1 : cam.pixelsPerMeter > 16 ? 2 : 5
+    const { width, height } = this.view
+    const spanX = width / cam.pixelsPerMeter
+    const spanY = height / cam.pixelsPerMeter
+    const step = gridStep(cam.pixelsPerMeter)
+    const minX = cam.x - spanX / 2 - step
+    const maxX = cam.x + spanX / 2 + step
+    const minY = cam.y - spanY / 2 - step
+    const maxY = cam.y + spanY / 2 + step
     const x0 = Math.floor(minX / step) * step
     const y0 = Math.floor(minY / step) * step
     for (let x = x0; x <= maxX; x += step) {
@@ -168,13 +207,9 @@ export class PixiRenderer {
       if (clipped.length < 3) continue
       const pts = clipped.flatMap((p) => [p.x, p.y])
       g.poly(pts).fill({ color: mat.color, alpha: mat.opacity })
-      // surface line
-      const xs = clipped.filter((p) => Math.abs(p.y - surfaceY) < 1e-3)
       if (clipped.length) {
         g.poly(pts).stroke({ color: 0xffffff, alpha: 0.35, width: 0.04 })
       }
-      void xs
-      void polygonCentroid
     }
   }
 
@@ -191,7 +226,7 @@ export class PixiRenderer {
       const snap = engine.interpolated(body.id)
       drawShape(gfx, body, bodyColor(body), body.type === 'fixed' ? 0.85 : 1)
       if (selected.includes(body.id)) {
-        gfx.stroke({ color: SELECT, width: 0.06, alpha: 1 })
+        drawSelectionHighlight(gfx, body)
       }
       if (snap) {
         gfx.position.set(snap.x, snap.y)
@@ -203,6 +238,7 @@ export class PixiRenderer {
     }
     for (const [id, gfx] of this.bodyGfx) {
       if (!seen.has(id)) {
+        this.bodiesLayer.removeChild(gfx)
         gfx.destroy()
         this.bodyGfx.delete(id)
       }
@@ -408,6 +444,19 @@ export class PixiRenderer {
     }
   }
 
+  private getTextStyle(color = '#e8eef7'): TextStyle {
+    let s = this.labelStyles.get(color)
+    if (!s) {
+      s = new TextStyle({
+        fill: color,
+        fontSize: 12,
+        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      })
+      this.labelStyles.set(color, s)
+    }
+    return s
+  }
+
   private drawLabels(
     engine: SimulationEngine,
     cam: Camera,
@@ -415,9 +464,12 @@ export class PixiRenderer {
     interaction: InteractionState,
     measureLabel?: string,
   ): void {
-    this.labels.removeChildren()
+    const removed = this.labels.removeChildren()
+    for (const child of removed) {
+      child.destroy({ texture: true, context: true })
+    }
     const add = (text: string, world: Vec2, color = '#e8eef7') => {
-      const t = new Text({ text, style: new TextStyle({ ...this.labelStyle, fill: color, fontSize: 12 }) })
+      const t = new Text({ text, style: this.getTextStyle(color) })
       t.position.set(
         (world.x - cam.x) * cam.pixelsPerMeter + this.view.width / 2 + 8,
         -(world.y - cam.y) * cam.pixelsPerMeter + this.view.height / 2 - 8,

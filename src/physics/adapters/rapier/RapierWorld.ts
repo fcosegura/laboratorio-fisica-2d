@@ -1,7 +1,7 @@
 import type { Collider, ImpulseJoint, RigidBody, World } from '@dimforge/rapier2d-compat'
 import type { BodyId, ColliderId, JointId } from '../../../core/ids.ts'
 import { decomposePolygon, toXYArray } from '../../../core/math/decompose.ts'
-import { ensureCCW, isConvex, removeDuplicateVertices } from '../../../core/math/polygon.ts'
+import { ensureCCW, isConvex, polygonArea, removeDuplicateVertices } from '../../../core/math/polygon.ts'
 import type { Vec2 } from '../../../core/math/vec2.ts'
 import type {
   BodyDesc,
@@ -30,19 +30,29 @@ function fromRapierType(t: number): BodyType {
   return BodyTypeConst.dynamic
 }
 
-function shapeToDescs(R: RapierModule, shape: PhysicsShape): InstanceType<RapierModule['ColliderDesc']>[] {
+type ShapePart = {
+  desc: InstanceType<RapierModule['ColliderDesc']>
+  areaWeight: number
+}
+
+function shapeToParts(R: RapierModule, shape: PhysicsShape): ShapePart[] {
   switch (shape.kind) {
     case 'circle':
-      return [R.ColliderDesc.ball(shape.radius)]
+      return [{ desc: R.ColliderDesc.ball(shape.radius), areaWeight: Math.PI * shape.radius * shape.radius }]
     case 'box':
-      return [R.ColliderDesc.cuboid(shape.hx, shape.hy)]
+      return [{ desc: R.ColliderDesc.cuboid(shape.hx, shape.hy), areaWeight: 4 * shape.hx * shape.hy }]
     case 'capsule':
-      return [R.ColliderDesc.capsule(shape.halfHeight, shape.radius)]
+      return [
+        {
+          desc: R.ColliderDesc.capsule(shape.halfHeight, shape.radius),
+          areaWeight: Math.PI * shape.radius * shape.radius + 4 * shape.radius * shape.halfHeight,
+        },
+      ]
     case 'segment':
-      return [R.ColliderDesc.segment(shape.a, shape.b)]
+      return [{ desc: R.ColliderDesc.segment(shape.a, shape.b), areaWeight: 1 }]
     case 'polyline': {
       const desc = R.ColliderDesc.polyline(toXYArray(shape.vertices))
-      return [desc]
+      return [{ desc, areaWeight: 1 }]
     }
     case 'convex': {
       const verts = removeDuplicateVertices(shape.vertices)
@@ -51,11 +61,13 @@ function shapeToDescs(R: RapierModule, shape: PhysicsShape): InstanceType<Rapier
       const parts = isConvex(verts) ? [ensureCCW(verts)] : decomposePolygon(verts)
       return parts.flatMap((part) => {
         const desc = R.ColliderDesc.convexHull(toXYArray(part))
-        return desc ? [desc] : []
+        if (!desc) return []
+        const area = Math.max(1e-6, polygonArea(part))
+        return [{ desc, areaWeight: area }]
       })
     }
     case 'compound':
-      return shape.parts.flatMap((p) => shapeToDescs(R, p))
+      return shape.parts.flatMap((p) => shapeToParts(R, p))
   }
 }
 
@@ -82,20 +94,27 @@ export class RapierWorld implements PhysicsWorld {
     this.world.timestep = dt
     this.world.numSolverIterations = 4
     this.world.maxCcdSubsteps = 1
-    this.world.profilerEnabled = true
+    this.world.profilerEnabled = false
   }
 
   setGravity(g: Vec2): void {
+    if (this.freed) return
     this.gravity = { x: g.x, y: g.y }
     this.world.gravity = { x: g.x, y: g.y }
   }
 
   setDt(dt: number): void {
+    if (this.freed) return
     this.dt = dt
     this.world.timestep = dt
   }
 
   addBody(desc: BodyDesc): BodyId {
+    if (this.freed) return desc.id
+    if (this.bodies.has(desc.id)) {
+      this.removeBody(desc.id)
+    }
+
     const rbDesc = toRapierType(this.R, desc.type)
       .setTranslation(desc.translation.x, desc.translation.y)
       .setRotation(desc.rotation)
@@ -112,16 +131,21 @@ export class RapierWorld implements PhysicsWorld {
     body.userData = desc.id
     const created: Collider[] = []
     for (const col of desc.colliders) {
-      const parts = shapeToDescs(this.R, col.shape)
+      const parts = shapeToParts(this.R, col.shape)
+      const totalArea = parts.reduce((s, p) => s + p.areaWeight, 0)
       for (const part of parts) {
-        if (col.mass !== undefined && col.mass > 0) part.setMass(col.mass)
-        else part.setDensity(col.density ?? 1)
-        part.setFriction(col.friction)
-        part.setRestitution(col.restitution)
-        if (col.isSensor) part.setSensor(true)
-        if (col.offset) part.setTranslation(col.offset.x, col.offset.y)
-        if (col.angle) part.setRotation(col.angle)
-        const collider = this.world.createCollider(part, body)
+        if (col.mass !== undefined && col.mass > 0) {
+          const ratio = totalArea > 0 ? part.areaWeight / totalArea : 1 / Math.max(1, parts.length)
+          part.desc.setMass(col.mass * ratio)
+        } else {
+          part.desc.setDensity(col.density ?? 1)
+        }
+        part.desc.setFriction(col.friction)
+        part.desc.setRestitution(col.restitution)
+        if (col.isSensor) part.desc.setSensor(true)
+        if (col.offset) part.desc.setTranslation(col.offset.x, col.offset.y)
+        if (col.angle) part.desc.setRotation(col.angle)
+        const collider = this.world.createCollider(part.desc, body)
         created.push(collider)
         this.colliderToBody.set(collider.handle, desc.id)
       }
@@ -133,6 +157,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   removeBody(id: BodyId): void {
+    if (this.freed) return
     const body = this.bodies.get(id)
     if (!body) return
     const drop: JointId[] = []
@@ -151,6 +176,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   hasBody(id: BodyId): boolean {
+    if (this.freed) return false
     return this.bodies.has(id)
   }
 
@@ -172,12 +198,14 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   getBody(id: BodyId): BodySnapshot | null {
+    if (this.freed) return null
     const body = this.bodies.get(id)
     if (!body) return null
     return this.snapshotOf(id, body)
   }
 
   setTransform(id: BodyId, x: number, y: number, angle: number): void {
+    if (this.freed) return
     const body = this.bodies.get(id)
     if (!body) return
     body.setTranslation({ x, y }, true)
@@ -185,6 +213,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   setVelocity(id: BodyId, vx: number, vy: number, omega: number): void {
+    if (this.freed) return
     const body = this.bodies.get(id)
     if (!body) return
     body.setLinvel({ x: vx, y: vy }, true)
@@ -192,6 +221,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   setBodyType(id: BodyId, type: BodyType): void {
+    if (this.freed) return
     const body = this.bodies.get(id)
     if (!body) return
     const R = this.R
@@ -205,22 +235,27 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   setGravityScale(id: BodyId, scale: number): void {
+    if (this.freed) return
     this.bodies.get(id)?.setGravityScale(scale, true)
   }
 
   setCcd(id: BodyId, enabled: boolean): void {
+    if (this.freed) return
     this.bodies.get(id)?.enableCcd(enabled)
   }
 
   applyForce(id: BodyId, fx: number, fy: number, point?: Vec2): void {
+    if (this.freed) return
     this.pendingForces.push({ id, fx, fy, px: point?.x, py: point?.y })
   }
 
   applyTorque(id: BodyId, torque: number): void {
+    if (this.freed) return
     this.pendingTorques.push({ id, tau: torque })
   }
 
   applyImpulse(id: BodyId, jx: number, jy: number, point?: Vec2): void {
+    if (this.freed) return
     const body = this.bodies.get(id)
     if (!body) return
     if (point) body.applyImpulseAtPoint({ x: jx, y: jy }, { x: point.x, y: point.y }, true)
@@ -228,6 +263,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   wake(id: BodyId): void {
+    if (this.freed) return
     this.bodies.get(id)?.wakeUp()
   }
 
@@ -262,12 +298,14 @@ export class RapierWorld implements PhysicsWorld {
 
   writeBodies(out: BodySnapshot[]): BodySnapshot[] {
     out.length = 0
+    if (this.freed) return out
     for (const [id, body] of this.bodies) out.push(this.snapshotOf(id, body))
     return out
   }
 
   writeContacts(out: PhysicsContact[]): PhysicsContact[] {
     out.length = 0
+    if (this.freed) return out
     const seen = new Set<string>()
     for (const [id, cols] of this.colliders) {
       for (const c of cols) {
@@ -278,9 +316,10 @@ export class RapierWorld implements PhysicsWorld {
           if (seen.has(key)) return
           seen.add(key)
           this.world.contactPair(c, other, (manifold, flipped) => {
-            const n = manifold.numContacts()
+            const n = manifold.numSolverContacts()
             for (let i = 0; i < n; i++) {
               const p = manifold.solverContactPoint(i)
+              if (!p) continue
               const normal = manifold.normal()
               const nx = flipped ? -normal.x : normal.x
               const ny = flipped ? -normal.y : normal.y
@@ -289,8 +328,8 @@ export class RapierWorld implements PhysicsWorld {
                 bodyB: otherId,
                 colliderA: String(c.handle) as ColliderId,
                 colliderB: String(other.handle) as ColliderId,
-                x: p?.x ?? 0,
-                y: p?.y ?? 0,
+                x: p.x,
+                y: p.y,
                 nx,
                 ny,
                 depth: Math.max(0, -manifold.contactDist(i)),
@@ -306,6 +345,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   pointHit(x: number, y: number, filter?: QueryFilter): QueryHit | null {
+    if (this.freed) return null
     let hit: QueryHit | null = null
     this.world.intersectionsWithPoint(
       { x, y },
@@ -314,12 +354,11 @@ export class RapierWorld implements PhysicsWorld {
         if (!bodyId) return true
         if (filter?.excludeBody && bodyId === filter.excludeBody) return true
         if (filter?.predicate && !filter.predicate(bodyId)) return true
-        const t = collider.translation()
         hit = {
           bodyId,
           colliderId: String(collider.handle) as ColliderId,
-          x: t.x,
-          y: t.y,
+          x,
+          y,
           nx: 0,
           ny: 0,
           isInside: true,
@@ -331,6 +370,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   projectPoint(x: number, y: number, filter?: QueryFilter): QueryHit | null {
+    if (this.freed) return null
     const proj = this.world.projectPoint(
       { x, y },
       true,
@@ -360,14 +400,17 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   forEachBody(fn: (body: BodySnapshot) => void): void {
+    if (this.freed) return
     for (const [id, body] of this.bodies) fn(this.snapshotOf(id, body))
   }
 
   getColliders(id: BodyId): ColliderDesc[] {
+    if (this.freed) return []
     return this.colliderDescs.get(id) ?? []
   }
 
   addJoint(desc: JointDesc): void {
+    if (this.freed) return
     if (this.joints.has(desc.id)) return
     if (desc.bodyA === desc.bodyB) return
     const a = this.bodies.get(desc.bodyA)
@@ -396,6 +439,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   removeJoint(id: JointId): void {
+    if (this.freed) return
     const joint = this.joints.get(id)
     if (!joint) return
     this.world.removeImpulseJoint(joint, true)
@@ -414,3 +458,4 @@ export class RapierWorld implements PhysicsWorld {
     this.jointEnds.clear()
   }
 }
+
