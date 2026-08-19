@@ -6,6 +6,7 @@ import { loadRapier } from '../physics/adapters/rapier/loadRapier.ts'
 import type { BodySnapshot, PhysicsContact, PhysicsWorld } from '../physics/ports.ts'
 import { buildWorld } from '../scene/builder.ts'
 import { cloneDocument, type SceneDocument } from '../scene/document.ts'
+import { pickBody } from '../scene/picking.ts'
 import { AnalyticFluidSolver } from '../fluids/analytic/AnalyticFluid.ts'
 import { Clock } from './clock.ts'
 import { DataRecorder } from './recorder.ts'
@@ -134,8 +135,14 @@ export class SimulationEngine {
     }
   }
 
-  bodyAt(x: number, y: number): BodyId | null {
-    return this.world?.pointHit(x, y)?.bodyId ?? null
+  bodyAt(x: number, y: number, predicate?: (id: BodyId) => boolean): BodyId | null {
+    const hit = this.world?.pointHit(x, y, predicate ? { predicate } : undefined)?.bodyId ?? null
+    if (hit) return hit
+    const poses = this.doc.bodies.map((b) => {
+      const live = this.world?.getBody(b.id)
+      return live ? { id: b.id, x: live.x, y: live.y, angle: live.angle } : b
+    })
+    return pickBody(this.doc.bodies, x, y, poses, (body) => (predicate ? predicate(body.id) : true))
   }
 
   applyImpulse(id: BodyId, jx: number, jy: number, point: Vec2): void {

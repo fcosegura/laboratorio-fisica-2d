@@ -332,6 +332,7 @@ export class LabRuntime {
       } else {
         this.patchBody(s.bodyId, { x, y })
         this.engine.world?.setTransform(s.bodyId, x, y, s.orig.angle)
+        this.engine.world?.writeBodies(this.engine.curr)
       }
       return
     }
@@ -413,11 +414,11 @@ export class LabRuntime {
   }
 
   private hitDynamic(x: number, y: number): string | null {
-    return (
-      this.engine.world?.pointHit(x, y, {
-        predicate: (id) => this.engine.world?.getBody(id)?.type === 'dynamic',
-      })?.bodyId ?? null
-    )
+    return this.engine.bodyAt(x, y, (id) => {
+      const live = this.engine.world?.getBody(id)?.type
+      if (live) return live === 'dynamic'
+      return this.engine.doc.bodies.find((b) => b.id === id)?.type === 'dynamic'
+    })
   }
 
   private poseOf(id: string): Transform {

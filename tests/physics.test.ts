@@ -408,6 +408,25 @@ describe('buoyancy', () => {
   })
 })
 
+describe('picking while paused', () => {
+  it('hits the ground before any physics step', async () => {
+    const engine = new SimulationEngine(emptyScene())
+    await engine.init()
+    expect(engine.clock.playing).toBe(false)
+    expect(engine.bodyAt(0, -0.25)).toBe('body:ground')
+    engine.world?.destroy()
+  })
+
+  it('still hits a sleeping body after the sim has run and paused', async () => {
+    const engine = new SimulationEngine(emptyScene())
+    await engine.init()
+    for (let i = 0; i < 60; i++) engine.stepOnce()
+    expect(engine.clock.playing).toBe(false)
+    expect(engine.bodyAt(0, -0.25)).toBe('body:ground')
+    engine.world?.destroy()
+  })
+})
+
 describe('analytic fluid helpers', () => {
   it('computes polygon area used for buoyancy', () => {
     const solver = new AnalyticFluidSolver()
