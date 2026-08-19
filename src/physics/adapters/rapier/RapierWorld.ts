@@ -1,7 +1,7 @@
 import type { Collider, RigidBody, World } from '@dimforge/rapier2d-compat'
 import type { BodyId, ColliderId } from '../../../core/ids.ts'
 import { decomposePolygon, toXYArray } from '../../../core/math/decompose.ts'
-import { isConvex } from '../../../core/math/polygon.ts'
+import { ensureCCW, isConvex, removeDuplicateVertices } from '../../../core/math/polygon.ts'
 import type { Vec2 } from '../../../core/math/vec2.ts'
 import type {
   BodyDesc,
@@ -45,13 +45,12 @@ function shapeToDescs(R: RapierModule, shape: PhysicsShape): InstanceType<Rapier
       return [desc]
     }
     case 'convex': {
-      if (shape.vertices.length < 3) return []
-      if (isConvex(shape.vertices)) {
-        const desc = R.ColliderDesc.convexPolyline(toXYArray(shape.vertices))
-        return desc ? [desc] : []
-      }
-      return decomposePolygon(shape.vertices).flatMap((part) => {
-        const desc = R.ColliderDesc.convexPolyline(toXYArray(part))
+      const verts = removeDuplicateVertices(shape.vertices)
+      if (verts.length < 3) return []
+      // Rapier requires counter-clockwise winding and rejects the shape otherwise.
+      const parts = isConvex(verts) ? [ensureCCW(verts)] : decomposePolygon(verts)
+      return parts.flatMap((part) => {
+        const desc = R.ColliderDesc.convexHull(toXYArray(part))
         return desc ? [desc] : []
       })
     }
@@ -71,6 +70,7 @@ export class RapierWorld implements PhysicsWorld {
   private readonly colliderDescs = new Map<BodyId, ColliderDesc[]>()
   private readonly pendingForces: { id: BodyId; fx: number; fy: number; px?: number; py?: number }[] = []
   private readonly pendingTorques: { id: BodyId; tau: number }[] = []
+  private freed = false
 
   constructor(R: RapierModule, gravity: Vec2, dt: number) {
     this.R = R
@@ -227,6 +227,7 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   step(dt?: number): void {
+    if (this.freed) return
     if (dt !== undefined && dt !== this.dt) this.setDt(dt)
     for (const body of this.bodies.values()) {
       body.resetForces(false)
@@ -381,6 +382,8 @@ export class RapierWorld implements PhysicsWorld {
   }
 
   destroy(): void {
+    if (this.freed) return
+    this.freed = true
     this.world.free()
     this.bodies.clear()
     this.colliders.clear()

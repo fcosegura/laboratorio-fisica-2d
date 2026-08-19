@@ -1,6 +1,8 @@
 import { IdFactory } from '../core/ids.ts'
 import { dist } from '../core/math/vec2.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
+import { inverseTransformPoint, type Transform } from '../core/math/transform.ts'
+import { dragToForce, dragToImpulse, forceAnchorWorld } from '../interaction/force.ts'
 import { getSolid } from '../materials/catalog.ts'
 import {
   createCamera,
@@ -27,8 +29,7 @@ import { parseDocument, serializeDocument } from '../scene/schema.ts'
 import { SimulationEngine } from '../sim/engine.ts'
 import type { LabStore } from './store.ts'
 
-const IMPULSE_PER_METER = 4
-const FORCE_PER_METER = 25
+const MIN_FORCE_DRAG = 0.04
 
 export class LabRuntime {
   engine: SimulationEngine
@@ -46,6 +47,8 @@ export class LabRuntime {
   private store: LabStore | null = null
   private uiAcc = 0
   private unbind: (() => void) | null = null
+  /** Bumped on dispose so an in-flight `mount()` cannot start a second loop. */
+  private session = 0
   timings = { frame: 0, render: 0 }
 
   constructor(doc: SceneDocument = emptyScene()) {
@@ -64,25 +67,33 @@ export class LabRuntime {
   }
 
   async mount(canvas: HTMLCanvasElement): Promise<void> {
+    const session = ++this.session
     this.canvas = canvas
     await this.engine.init()
+    if (session !== this.session) return
     await this.renderer.init(canvas)
+    if (session !== this.session) return
     this.bind(canvas)
     this.resize()
     this.lastT = performance.now()
     const loop = (t: number) => {
+      if (session !== this.session) return
       const dt = (t - this.lastT) / 1000
       this.lastT = t
       const t0 = performance.now()
-      this.engine.advance(dt)
-      this.applySustainedForce()
-      this.renderer.draw(
-        this.engine,
-        this.camera,
-        this.store?.getState().viz ?? this.engine.doc.visualization,
-        this.selected,
-        this.state,
-      )
+      try {
+        this.engine.advance(dt)
+        this.applySustainedForce()
+        this.renderer.draw(
+          this.engine,
+          this.camera,
+          this.store?.getState().viz ?? this.engine.doc.visualization,
+          this.selected,
+          this.state,
+        )
+      } catch (err) {
+        console.error(err)
+      }
       this.timings.frame = performance.now() - t0
       this.timings.render = this.renderer.lastDrawMs
       this.uiAcc += dt
@@ -90,21 +101,25 @@ export class LabRuntime {
         this.uiAcc = 0
         this.pushUi()
       }
-      this.raf = requestAnimationFrame(loop)
+      if (session === this.session) this.raf = requestAnimationFrame(loop)
     }
     this.raf = requestAnimationFrame(loop)
   }
 
   dispose(): void {
+    this.session += 1
     cancelAnimationFrame(this.raf)
+    this.raf = 0
     this.unbind?.()
     this.unbind = null
     this.renderer.destroy()
     this.engine.world?.destroy()
+    this.engine.world = null
     this.canvas = null
   }
 
   private bind(canvas: HTMLCanvasElement): void {
+    this.unbind?.()
     canvas.style.touchAction = 'none'
     const onPointer = (e: PointerEvent) => this.onPointer(e)
     const onWheel = (e: WheelEvent) => this.onWheel(e)
@@ -237,15 +252,19 @@ export class LabRuntime {
     }
 
     if (tool === 'force') {
-      if (!hit) return
-      this.selected = [hit]
+      const bodyId = this.hitDynamic(world.x, world.y)
+      if (!bodyId) return
+      this.selected = [bodyId]
+      const pose = this.poseOf(bodyId)
       this.state = {
         kind: 'applyingForce',
-        bodyId: hit,
-        origin: world,
+        bodyId,
+        local: inverseTransformPoint({ x: 0, y: 0 }, world, pose),
         current: world,
         mode: e.shiftKey ? 'force' : 'impulse',
       }
+      if (e.shiftKey) this.ensurePlaying()
+      this.pushUi()
       return
     }
 
@@ -313,13 +332,23 @@ export class LabRuntime {
   private onUp(_e: PointerEvent, world: Vec2): void {
     const s = this.state
     if (s.kind === 'creating') {
+      if (s.tool === 'polygon') {
+        return
+      }
       this.commitCreate(s.tool, s.start, world, s.points)
+      this.state = { kind: 'idle' }
+      return
     }
     if (s.kind === 'applyingForce') {
-      const dx = s.current.x - s.origin.x
-      const dy = s.current.y - s.origin.y
-      if (s.mode === 'impulse') {
-        this.engine.applyImpulse(s.bodyId, dx * IMPULSE_PER_METER, dy * IMPULSE_PER_METER, s.origin)
+      const origin = forceAnchorWorld(s.local, this.poseOf(s.bodyId))
+      const dx = s.current.x - origin.x
+      const dy = s.current.y - origin.y
+      if (s.mode === 'impulse' && Math.hypot(dx, dy) >= MIN_FORCE_DRAG) {
+        const mass = this.bodyMass(s.bodyId)
+        const j = dragToImpulse(mass, dx, dy)
+        this.engine.world?.wake(s.bodyId)
+        this.engine.applyImpulse(s.bodyId, j.x, j.y, origin)
+        this.ensurePlaying()
       }
       this.engine.persistentForces = []
     }
@@ -339,19 +368,47 @@ export class LabRuntime {
 
   private onDblClick(e: MouseEvent): void {
     if (this.tool() === 'polygon' && this.state.kind === 'creating') {
-      this.commitCreate('polygon', this.state.start, this.worldOf(e), this.state.points)
+      const { start, points } = this.state
       this.state = { kind: 'idle' }
+      this.commitCreate('polygon', start, this.worldOf(e), points)
     }
   }
 
   private applySustainedForce(): void {
     if (this.state.kind !== 'applyingForce' || this.state.mode !== 'force') return
     const s = this.state
-    const dx = s.current.x - s.origin.x
-    const dy = s.current.y - s.origin.y
-    this.engine.persistentForces = [
-      { bodyId: s.bodyId, x: s.origin.x, y: s.origin.y, fx: dx * FORCE_PER_METER, fy: dy * FORCE_PER_METER },
-    ]
+    const origin = forceAnchorWorld(s.local, this.poseOf(s.bodyId))
+    const dx = s.current.x - origin.x
+    const dy = s.current.y - origin.y
+    const mass = this.bodyMass(s.bodyId)
+    const f = dragToForce(mass, dx, dy)
+    this.engine.world?.wake(s.bodyId)
+    this.engine.persistentForces = [{ bodyId: s.bodyId, x: origin.x, y: origin.y, fx: f.x, fy: f.y }]
+  }
+
+  private hitDynamic(x: number, y: number): string | null {
+    return (
+      this.engine.world?.pointHit(x, y, {
+        predicate: (id) => this.engine.world?.getBody(id)?.type === 'dynamic',
+      })?.bodyId ?? null
+    )
+  }
+
+  private poseOf(id: string): Transform {
+    const snap = this.engine.interpolated(id)
+    if (snap) return { x: snap.x, y: snap.y, angle: snap.angle }
+    const body = this.engine.doc.bodies.find((b) => b.id === id)
+    return { x: body?.x ?? 0, y: body?.y ?? 0, angle: body?.angle ?? 0 }
+  }
+
+  private bodyMass(id: string): number {
+    return this.engine.world?.getBody(id)?.mass ?? this.engine.curr.find((b) => b.id === id)?.mass ?? 1
+  }
+
+  private ensurePlaying(): void {
+    if (this.engine.clock.playing) return
+    this.engine.play()
+    this.pushUi()
   }
 
   private commitCreate(tool: Tool, a: Vec2, b: Vec2, points?: Vec2[]): void {
@@ -469,6 +526,7 @@ export class LabRuntime {
       ],
     })
     this.selected = [body.id]
+    this.engine.world?.writeBodies(this.engine.curr)
     this.pushUi()
   }
 
@@ -651,8 +709,9 @@ export class LabRuntime {
     if (t && !e.ctrlKey && !e.metaKey) store.setState({ tool: t })
     if (e.key === 'Escape') this.state = { kind: 'idle' }
     if (e.key === 'Enter' && this.state.kind === 'creating' && this.state.tool === 'polygon') {
-      this.commitCreate('polygon', this.state.start, this.state.current, this.state.points)
+      const { start, current, points } = this.state
       this.state = { kind: 'idle' }
+      this.commitCreate('polygon', start, current, points)
     }
   }
 

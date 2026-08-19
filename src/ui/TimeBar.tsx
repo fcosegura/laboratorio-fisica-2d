@@ -1,6 +1,6 @@
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
-import { GRAVITY_PRESETS, type GravityPreset } from '../scene/document.ts'
+import { emptyScene, GRAVITY_PRESETS, type GravityPreset } from '../scene/document.ts'
 import { EXPERIMENTS } from '../experiments/scenes.ts'
 
 export function TimeBar() {
@@ -54,6 +54,14 @@ export function TimeBar() {
       </select>
       <div className="font-mono text-xs text-muted">t = {simTime.toFixed(2)} s</div>
       <div className="ml-auto flex items-center gap-2">
+        <Btn
+          onClick={() => {
+            if (confirm('¿Borrar toda la escena?')) void lab.loadDocument(emptyScene())
+          }}
+          title="Borrar todo"
+        >
+          🗑 Borrar todo
+        </Btn>
         <select
           className="max-w-44 rounded-md border border-line bg-panel-2 px-2 py-1 text-xs"
           defaultValue=""

@@ -8,6 +8,7 @@ import {
 import type { Camera } from '../camera/coords.ts'
 import { aabbFromBox, aabbFromCircle, aabbFromPoints, emptyAABB, includeAABB, type AABB } from '../core/math/aabb.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
+import { FORCE_ACCEL_PER_METER, forceAnchorWorld, IMPULSE_VELOCITY_PER_METER } from '../interaction/force.ts'
 import { getFluid, getSolid } from '../materials/catalog.ts'
 import type { SceneBody, SceneDocument, VizLayers } from '../scene/document.ts'
 import type { AppliedForce, SimulationEngine } from '../sim/engine.ts'
@@ -68,6 +69,7 @@ export class PixiRenderer {
   lastDrawMs = 0
 
   async init(canvas: HTMLCanvasElement): Promise<void> {
+    this.destroy()
     const app = new Application()
     await app.init({
       canvas,
@@ -93,7 +95,7 @@ export class PixiRenderer {
   }
 
   destroy(): void {
-    this.app?.destroy()
+    this.app?.destroy({ removeView: false }, { children: true })
     this.app = null
     this.bodyGfx.clear()
   }
@@ -266,10 +268,10 @@ export class PixiRenderer {
       }
     }
 
-    this.drawGhost(g, interaction)
+    this.drawGhost(g, engine, interaction)
   }
 
-  private drawGhost(g: Graphics, interaction: InteractionState): void {
+  private drawGhost(g: Graphics, engine: SimulationEngine, interaction: InteractionState): void {
     if (interaction.kind === 'creating') {
       const a = interaction.start
       const b = interaction.current
@@ -297,12 +299,13 @@ export class PixiRenderer {
       }
     }
     if (interaction.kind === 'applyingForce') {
+      const origin = this.forceOrigin(engine, interaction)
       this.arrow(
         g,
-        interaction.origin.x,
-        interaction.origin.y,
-        interaction.current.x - interaction.origin.x,
-        interaction.current.y - interaction.origin.y,
+        origin.x,
+        origin.y,
+        interaction.current.x - origin.x,
+        interaction.current.y - origin.y,
         FORCE,
         0.06,
       )
@@ -341,10 +344,12 @@ export class PixiRenderer {
       this.labels.addChild(t)
     }
     if (interaction.kind === 'applyingForce') {
-      const dx = interaction.current.x - interaction.origin.x
-      const dy = interaction.current.y - interaction.origin.y
+      const origin = this.forceOrigin(engine, interaction)
+      const dx = interaction.current.x - origin.x
+      const dy = interaction.current.y - origin.y
       const mag = Math.hypot(dx, dy)
-      const scale = interaction.mode === 'impulse' ? 4 : 25
+      const mass = engine.world?.getBody(interaction.bodyId)?.mass ?? 1
+      const scale = interaction.mode === 'impulse' ? mass * IMPULSE_VELOCITY_PER_METER : mass * FORCE_ACCEL_PER_METER
       const unit = interaction.mode === 'impulse' ? 'N·s' : 'N'
       add(`${(mag * scale).toFixed(1)} ${unit}`, interaction.current, '#ffb020')
     }
@@ -364,7 +369,15 @@ export class PixiRenderer {
         if (speed > 0.15) add(`${speed.toFixed(1)} m/s`, { x: b.x, y: b.y + 0.2 }, '#7aa2ff')
       }
     }
-    void engine
+  }
+
+  private forceOrigin(engine: SimulationEngine, interaction: Extract<InteractionState, { kind: 'applyingForce' }>): Vec2 {
+    if (!interaction.local) return interaction.current
+    const snap = engine.interpolated(interaction.bodyId)
+    const body = engine.doc.bodies.find((b) => b.id === interaction.bodyId)
+    const pose = snap ?? body
+    if (!pose) return interaction.current
+    return forceAnchorWorld(interaction.local, pose)
   }
 }
 

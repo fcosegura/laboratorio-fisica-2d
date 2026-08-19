@@ -19,7 +19,8 @@ export type InteractionState =
   | {
       kind: 'applyingForce'
       bodyId: BodyId
-      origin: Vec2
+      /** Click point in the body's local space so the handle follows the body. */
+      local: Vec2
       current: Vec2
       mode: 'impulse' | 'force'
     }

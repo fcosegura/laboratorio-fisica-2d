@@ -19,6 +19,6 @@ export const TOOL_META: { id: Tool; label: string; hint: string; group: 'nav' | 
   { id: 'polygon', label: 'Polígono', hint: 'G', group: 'create' },
   { id: 'line', label: 'Plataforma', hint: 'L', group: 'create' },
   { id: 'fluid', label: 'Líquido', hint: 'W', group: 'create' },
-  { id: 'force', label: 'Fuerza', hint: 'F', group: 'phys' },
+  { id: 'force', label: 'Fuerza', hint: 'F · arrastra; Mayús sostiene', group: 'phys' },
   { id: 'measure', label: 'Medir', hint: 'M', group: 'phys' },
 ]

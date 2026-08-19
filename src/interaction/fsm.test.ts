@@ -25,7 +25,7 @@ function reduce(
       return {
         kind: 'applyingForce',
         bodyId: event.hit,
-        origin: { x: 0, y: 0 },
+        local: { x: 0, y: 0 },
         current: { x: 0, y: 0 },
         mode: 'impulse',
       }

@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { PHYSICS_DT } from '../src/core/constants.ts'
+import { dragToImpulse, IMPULSE_VELOCITY_PER_METER } from '../src/interaction/force.ts'
 import { RapierWorld } from '../src/physics/adapters/rapier/RapierWorld.ts'
 import { loadRapier } from '../src/physics/adapters/rapier/loadRapier.ts'
 import { SimulationEngine } from '../src/sim/engine.ts'
@@ -58,6 +59,27 @@ describe('impulse', () => {
     world.step()
     const v = world.getBody('ball')!.vx
     expect(Math.abs(v - 6 / mass) / (6 / mass)).toBeLessThan(0.01)
+    world.destroy()
+  })
+
+  it('a 1 m force-tool drag kicks a heavy wood body by ~4 m/s', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: 0 }, PHYSICS_DT)
+    world.addBody({
+      id: 'block',
+      type: 'dynamic',
+      translation: { x: 0, y: 0 },
+      rotation: 0,
+      gravityScale: 0,
+      linearDamping: 0,
+      angularDamping: 0,
+      colliders: [{ shape: { kind: 'box', hx: 0.5, hy: 0.5 }, density: 600, friction: 0, restitution: 0 }],
+    })
+    const mass = world.getBody('block')!.mass
+    const j = dragToImpulse(mass, 1, 0)
+    world.applyImpulse('block', j.x, j.y)
+    world.step()
+    expect(world.getBody('block')!.vx).toBeCloseTo(IMPULSE_VELOCITY_PER_METER, 1)
     world.destroy()
   })
 })

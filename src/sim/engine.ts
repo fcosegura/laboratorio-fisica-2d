@@ -141,5 +141,6 @@ export class SimulationEngine {
   applyImpulse(id: BodyId, jx: number, jy: number, point: Vec2): void {
     this.world?.applyImpulse(id, jx, jy, point)
     this.appliedForces.push({ bodyId: id, x: point.x, y: point.y, fx: jx / PHYSICS_DT, fy: jy / PHYSICS_DT })
+    this.world?.writeBodies(this.curr)
   }
 }
