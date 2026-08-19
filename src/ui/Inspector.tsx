@@ -22,13 +22,11 @@ export function Inspector() {
       {!body && <p className="text-muted">Selecciona un objeto para editar sus propiedades.</p>}
       {body && (
         <div className="flex flex-col gap-3">
-          <Field label="Nombre">
-            <input
-              className="field"
-              value={body.name}
-              onChange={(e) => lab.commitPatch(body.id, { name: e.target.value })}
-            />
-          </Field>
+          <TextField
+            label="Nombre"
+            value={body.name}
+            onChange={(name) => lab.commitPatch(body.id, { name })}
+          />
           <div className="grid grid-cols-2 gap-2">
             <Num
               label="x (m)"
@@ -258,6 +256,47 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <div className="mb-1 text-[11px] text-muted">{label}</div>
       {children}
     </label>
+  )
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+}) {
+  const [localText, setLocalText] = useState<string | null>(null)
+  const displayValue = localText !== null ? localText : value
+
+  const commit = () => {
+    if (localText === null) return
+    const next = localText.trim()
+    setLocalText(null)
+    if (next !== '' && next !== value) {
+      onChange(next)
+    }
+  }
+
+  return (
+    <Field label={label}>
+      <input
+        className="field"
+        type="text"
+        value={displayValue}
+        onFocus={() => setLocalText(value)}
+        onChange={(e) => setLocalText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commit()
+            ;(e.target as HTMLInputElement).blur()
+          }
+        }}
+      />
+    </Field>
   )
 }
 

@@ -60,27 +60,41 @@ export class SimulationEngine {
     this.prevMap.clear()
     this.currMap.clear()
     this.world.writeBodies(this.curr)
-    for (const b of this.curr) this.currMap.set(b.id, b)
+    this.syncCurrMap()
     this.prev = this.curr.map((b) => ({ ...b }))
     for (const b of this.prev) this.prevMap.set(b.id, b)
     this.contacts = []
     this.appliedForces.length = 0
   }
 
+  private syncCurrMap(): void {
+    this.currMap.clear()
+    for (const b of this.curr) this.currMap.set(b.id, b)
+  }
+
+  syncBodies(): void {
+    this.world?.writeBodies(this.curr)
+    this.syncCurrMap()
+  }
+
   async reset(): Promise<void> {
-    this.reloadQueue = this.reloadQueue.then(async () => {
-      const R = await loadRapier()
-      this.rebuild(R)
-    })
+    this.reloadQueue = this.reloadQueue
+      .catch(() => {})
+      .then(async () => {
+        const R = await loadRapier()
+        this.rebuild(R)
+      })
     return this.reloadQueue
   }
 
   async reload(doc: SceneDocument): Promise<void> {
-    this.reloadQueue = this.reloadQueue.then(async () => {
-      this.doc = cloneDocument(doc)
-      const R = await loadRapier()
-      this.rebuild(R)
-    })
+    this.reloadQueue = this.reloadQueue
+      .catch(() => {})
+      .then(async () => {
+        this.doc = cloneDocument(doc)
+        const R = await loadRapier()
+        this.rebuild(R)
+      })
     return this.reloadQueue
   }
 
@@ -118,8 +132,7 @@ export class SimulationEngine {
     this.world.step(PHYSICS_DT)
     const t2 = performance.now()
     this.world.writeBodies(this.curr)
-    this.currMap.clear()
-    for (const b of this.curr) this.currMap.set(b.id, b)
+    this.syncCurrMap()
 
     this.world.writeContacts(this.contacts)
     this.recorder.sample(stepTime, PHYSICS_DT, this.doc.world.gravity.y, this.curr)
@@ -177,7 +190,7 @@ export class SimulationEngine {
   applyImpulse(id: BodyId, jx: number, jy: number, point: Vec2): void {
     this.world?.applyImpulse(id, jx, jy, point)
     this.appliedForces.push({ bodyId: id, x: point.x, y: point.y, fx: jx / PHYSICS_DT, fy: jy / PHYSICS_DT })
-    this.world?.writeBodies(this.curr)
+    this.syncBodies()
   }
 }
 

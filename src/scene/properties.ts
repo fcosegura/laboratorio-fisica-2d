@@ -27,7 +27,7 @@ export const PROPERTY_DESCRIPTORS = {
 } as const satisfies Record<string, PropertyDescriptor>
 
 export function clampProperty(value: number, desc?: PropertyDescriptor): number {
-  if (!Number.isFinite(value)) return 0
+  if (!Number.isFinite(value)) return desc?.min ?? 0
   if (!desc) return value
   let result = value
   if (desc.min !== undefined && result < desc.min) result = desc.min

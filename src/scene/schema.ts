@@ -45,7 +45,7 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         vy: z.number(),
         omega: z.number(),
         massMode: z.enum(['density', 'explicit']),
-        density: z.number().min(0).max(PROPERTY_DESCRIPTORS.density.max!),
+        density: z.number().min(PROPERTY_DESCRIPTORS.density.min!).max(PROPERTY_DESCRIPTORS.density.max!),
         mass: z.number().min(PROPERTY_DESCRIPTORS.mass.min!).max(PROPERTY_DESCRIPTORS.mass.max!).optional(),
         friction: z.number().min(0).max(PROPERTY_DESCRIPTORS.friction.max!),
         restitution: z.number().min(0).max(PROPERTY_DESCRIPTORS.restitution.max!),
@@ -142,6 +142,13 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
       }
       jointIds.add(j.id)
 
+      if (j.bodyA === j.bodyB) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `La unión '${j.id}' no puede conectar un cuerpo consigo mismo ('${j.bodyA}')`,
+          path: ['joints', i, 'bodyB'],
+        })
+      }
       if (!bodyIds.has(j.bodyA)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -191,10 +198,15 @@ export function migrateDocument(raw: unknown): SceneDocument {
     throw new Error('El archivo de escena no es un objeto JSON válido')
   }
   const obj = raw as Record<string, unknown>
-  let version = typeof obj.schemaVersion === 'number' ? obj.schemaVersion : 1
-  if (typeof obj.schemaVersion === 'number' && obj.schemaVersion > SCHEMA_VERSION) {
-    throw new Error(`El archivo corresponde a una versión de esquema más reciente (versión ${obj.schemaVersion}, versión soportada actual ${SCHEMA_VERSION})`)
+  if (typeof obj.schemaVersion === 'number') {
+    if (obj.schemaVersion < 1 || !Number.isInteger(obj.schemaVersion)) {
+      throw new Error(`Versión de esquema inválida: ${obj.schemaVersion}`)
+    }
+    if (obj.schemaVersion > SCHEMA_VERSION) {
+      throw new Error(`El archivo corresponde a una versión de esquema más reciente (versión ${obj.schemaVersion}, versión soportada actual ${SCHEMA_VERSION})`)
+    }
   }
+  let version = typeof obj.schemaVersion === 'number' ? obj.schemaVersion : 1
   let current: Record<string, unknown> = { ...obj }
   if (current.schemaVersion === undefined) {
     current.schemaVersion = 1

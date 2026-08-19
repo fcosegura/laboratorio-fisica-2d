@@ -289,7 +289,7 @@ export class LabRuntime {
         }
       } else {
         this.engine.world?.setTransform(s.bodyId, x, y, s.orig.angle)
-        this.engine.world?.writeBodies(this.engine.curr)
+        this.engine.syncBodies()
       }
       return
     }

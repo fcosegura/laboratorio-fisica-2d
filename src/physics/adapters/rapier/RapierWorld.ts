@@ -317,12 +317,13 @@ export class RapierWorld implements PhysicsWorld {
           seen.add(key)
           this.world.contactPair(c, other, (manifold, flipped) => {
             const n = manifold.numSolverContacts()
+            if (n <= 0) return
+            const normal = manifold.normal()
+            const nx = flipped ? -normal.x : normal.x
+            const ny = flipped ? -normal.y : normal.y
             for (let i = 0; i < n; i++) {
               const p = manifold.solverContactPoint(i)
               if (!p) continue
-              const normal = manifold.normal()
-              const nx = flipped ? -normal.x : normal.x
-              const ny = flipped ? -normal.y : normal.y
               out.push({
                 bodyA: id,
                 bodyB: otherId,

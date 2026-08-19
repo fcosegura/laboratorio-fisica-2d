@@ -1,6 +1,7 @@
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { emptyScene, GRAVITY_PRESETS, type GravityPreset } from '../scene/document.ts'
+import { PROPERTY_DESCRIPTORS } from '../scene/properties.ts'
 import { EXPERIMENTS } from '../experiments/scenes.ts'
 
 export function TimeBar() {
@@ -34,9 +35,9 @@ export function TimeBar() {
         ×{timeScale.toFixed(1)}
         <input
           type="range"
-          min={0.1}
-          max={2}
-          step={0.1}
+          min={PROPERTY_DESCRIPTORS.timeScale.min ?? 0.05}
+          max={PROPERTY_DESCRIPTORS.timeScale.max ?? 5}
+          step={PROPERTY_DESCRIPTORS.timeScale.step ?? 0.1}
           value={timeScale}
           onChange={(e) => lab.setTimeScale(Number(e.target.value))}
           className="w-24"

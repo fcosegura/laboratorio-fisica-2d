@@ -109,6 +109,35 @@ describe('schema cross-validation & migration', () => {
     expect(() => parseDocument(json)).toThrow(/esquema más reciente/)
   })
 
+  it('rejects documents with invalid schemaVersion <= 0', () => {
+    const doc = emptyScene() as unknown as Record<string, unknown>
+    doc.schemaVersion = 0
+    const json = JSON.stringify(doc)
+    expect(() => parseDocument(json)).toThrow(/Versión de esquema inválida/)
+  })
+
+  it('rejects joints that connect a body to itself', () => {
+    const doc = emptyScene()
+    doc.joints.push({
+      id: 'joint:self',
+      kind: 'revolute',
+      bodyA: 'body:ground',
+      bodyB: 'body:ground',
+      anchorA: { x: 0, y: 0 },
+      anchorB: { x: 0, y: 0 },
+    })
+
+    const json = JSON.stringify(doc)
+    expect(() => parseDocument(json)).toThrow(/no puede conectar un cuerpo consigo mismo/)
+  })
+
+  it('rejects zero or below-minimum density', () => {
+    const doc = emptyScene()
+    doc.bodies[0]!.density = 0
+    const json = JSON.stringify(doc)
+    expect(() => parseDocument(json)).toThrow()
+  })
+
   it('migrates unversioned documents to schemaVersion 1', () => {
     const raw = emptyScene() as unknown as Record<string, unknown>
     delete raw.schemaVersion
