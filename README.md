@@ -59,6 +59,7 @@ Reglas de dependencia comprobadas en `tests/architecture.test.ts`.
 
 - [Revisión estática](docs/revision-estatica.md): defectos conocidos con archivo, línea y severidad.
 - [Plan de mejora](docs/plan-de-mejora.md): fases ordenadas por dependencia técnica.
+- [AGENTS.md](AGENTS.md): invariantes y capas para agentes (y humanos). [Contribuir](CONTRIBUTING.md).
 
 ## Licencia
 

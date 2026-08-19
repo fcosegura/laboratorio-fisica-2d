@@ -161,7 +161,8 @@ Objetivo: que el repositorio resista la siguiente ronda de cambios.
   edición puede introducir un valor no finito en el documento.
 - **Un `AGENTS.md`/`CONTRIBUTING.md` corto** con las tres invariantes que este plan establece: toda
   mutación del documento pasa por el historial; `bodyToDesc` es la única traducción a física; nada de
-  `void X` para silenciar `noUnusedLocals` — o se usa, o se borra.
+  `void X` para silenciar `noUnusedLocals` — o se usa, o se borra. (Hecho: ver raíz del repo y
+  `.cursor/rules/`.)
 
 ---
 

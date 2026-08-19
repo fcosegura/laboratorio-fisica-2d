@@ -1,0 +1,27 @@
+---
+description: Inspector, store de UI y campos numéricos sin NaN
+globs: src/ui/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# UI
+
+La UI habla con `LabRuntime` (`useLab`) y lee Zustand. No importes `pixi.js` ni Rapier.
+
+Campos numéricos: estado local mientras se escribe; confirmar en `blur`/`Enter` con `parseAndClamp` y el descriptor de `properties.ts`.
+
+```tsx
+// ❌ BAD
+onChange={(e) => lab.commitPatch(id, { x: Number(e.target.value) })}
+
+// ✅ GOOD
+<Num
+  value={live?.x ?? body.x}
+  descriptor={PROPERTY_DESCRIPTORS.x}
+  onChange={(v) => lab.commitPatch(body.id, { x: v })}
+/>
+```
+
+Ángulo: grados en el inspector, radianes en el documento. Al pasar a masa explícita, siembra `mass` con la masa del snapshot.
+
+`commitPatch` / `commitJointPatch` ya van al historial. Textos visibles en español.

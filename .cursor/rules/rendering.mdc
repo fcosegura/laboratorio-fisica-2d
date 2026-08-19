@@ -1,0 +1,22 @@
+---
+description: Ciclo de vida de PixiJS, etiquetas y dibujo del laboratorio
+globs: src/render/**/*.ts
+alwaysApply: false
+---
+
+# Render
+
+`PixiRenderer.init()` debe crear `world`, `grid`, `fluids`, `bodiesLayer`, `overlay` y `labels`. `destroy()` destuye el `Application` con hijos; el siguiente `init()` reconstruye todo.
+
+```ts
+draw(...) {
+  if (!this.app || this.world.destroyed) return
+  // ...
+}
+```
+
+No crees `Text` / `TextStyle` por cuerpo y por frame: reutiliza por clave o destruye los hijos retirados.
+
+No importes Rapier ni React. Dibuja desde snapshots del motor y `SceneBody.shape`, no desde handles del mundo físico.
+
+El mundo Pixi escala `(ppm, -ppm)` porque Y del laboratorio apunta arriba.

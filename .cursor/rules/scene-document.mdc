@@ -1,0 +1,24 @@
+---
+description: Documento de escena, historial, esquema Zod y propiedades editables
+globs: src/scene/**/*.ts
+alwaysApply: false
+---
+
+# Documento de escena
+
+`History` clona con `cloneDocument` antes de `apply`/`invert`. Un comando debe restaurar también el **índice** del array (ver `tests/commands.test.ts`).
+
+```ts
+// ❌ BAD — mutación pública
+lab.patchBody(id, { x, y })
+
+// ✅ GOOD — gesto en pausa: Rapier ahora, comando al soltar con orig
+this.engine.world?.setTransform(id, x, y, orig.angle)
+this.history.apply(new UpdateBodyCommand(id, { x, y }, { x: orig.x, y: orig.y }))
+```
+
+Rangos: `PROPERTY_DESCRIPTORS` en `properties.ts` (inspector y Zod). `massMode: 'explicit'` exige `mass` finita y > 0.
+
+Carga: `parseDocument` → migraciones → `sceneDocumentSchema`. Ids únicos, uniones a cuerpos existentes, materiales del catálogo. Al cargar, `IdFactory.seedMax`.
+
+No introduzcas NaN: `JSON.stringify(NaN)` es `null` y el archivo deja de abrirse.

@@ -1,0 +1,24 @@
+---
+description: Capas, pipeline de simulación e invariantes del laboratorio 2D
+alwaysApply: true
+---
+
+# Arquitectura
+
+Pipeline: `SceneDocument` → `History`/`Command` → `SimulationEngine` → Rapier + fluido analítico → snapshot → PixiJS.
+
+React (`src/ui`) no calcula física. Rapier solo en `src/physics/adapters/rapier/`. El store Zustand es UI, no dueño del documento.
+
+## Invariantes
+
+- Mutación persistente del documento: solo `History.apply` con un `Command`.
+- `bodyToDesc` (`src/scene/builder.ts`) es la única traducción `SceneBody` → `BodyDesc`.
+- No uses `void x` para callar `noUnusedLocals`.
+
+## Imports
+
+`tests/architecture.test.ts` es la fuente de verdad: `core` no importa otras capas; `physics` no importa render/ui/sim/pixi/react; `sim` no importa pixi/react/render; `render` no importa rapier/react; `ui` no importa rapier/pixi.
+
+## Mundo
+
+Metros, Y hacia arriba, `PHYSICS_DT = 1/60`. Tras cambiar física o esquema: `npm test && npm run typecheck`.

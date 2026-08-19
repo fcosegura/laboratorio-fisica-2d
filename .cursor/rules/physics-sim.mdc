@@ -1,0 +1,25 @@
+---
+description: Motor Rapier, reloj de paso fijo, fluido analítico y ciclo de vida
+globs: src/{physics,sim,fluids}/**/*.ts
+alwaysApply: false
+---
+
+# Física y simulación
+
+Paso fijo en `Clock` (`PHYSICS_DT`, máx. 5 subpasos/frame). `reload`/`reset` se encadenan en `reloadQueue`.
+
+`RapierWorld`: si `freed`, los métodos públicos no-op. `addBody` con id existente elimina el cuerpo previo. Masa explícita se reparte entre piezas convexas por área.
+
+```ts
+// ❌ BAD — descriptor duplicado en el motor
+world.addBody({ id: body.id, translation: { x: body.x, y: body.y }, /* ... */ })
+
+// ✅ GOOD
+world.addBody(bodyToDesc(body))
+```
+
+`appliedForces.length = 0` al inicio de cada `physicsStep`. Fuerza sostenida: `persistentForces`, reaplicada cada paso.
+
+Fluido: recorte hidrostático analítico, no SPH. Picking: `pointHit` y fallback `pickBody` (geometría de escena, poses vivas).
+
+Tras `destroy()`, no leas colliders ni bodies de Rapier.

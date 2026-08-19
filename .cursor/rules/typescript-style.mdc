@@ -1,0 +1,25 @@
+---
+description: TypeScript estricto, imports con extensión y Prettier del repo
+globs: "**/*.{ts,tsx}"
+alwaysApply: false
+---
+
+# TypeScript
+
+`strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `noUnusedLocals`. Imports con extensión `.ts` / `.tsx`.
+
+```ts
+// ❌ BAD
+import { cloneDocument } from './document'
+const x = arr[0].id
+
+// ✅ GOOD
+import { cloneDocument } from './document.ts'
+const x = arr[0]?.id
+```
+
+Prettier: `semi: false`, `singleQuote: true`, `trailingComma: 'all'`, `printWidth: 100`.
+
+Enums de dominio como objetos `as const` (`Tool`, `BodyType`, `ShapeKind`), no `enum` nativo.
+
+Identificadores en inglés. Cadenas de UI y mensajes de esquema en español.
