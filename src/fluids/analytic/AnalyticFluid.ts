@@ -92,9 +92,10 @@ export class AnalyticFluidSolver {
     this.debug.length = 0
     const g = world.gravity
     const gmag = Math.hypot(g.x, g.y)
-    if (gmag < 1e-8) return
-    const gx = g.x / gmag
-    const gy = g.y / gmag
+    // Surface normal follows −g. At zero-g the free surface is undefined; fall back to +Y
+    // (document restSurfaceY) so overlap + drag still work while buoyancy → 0.
+    const gx = gmag < 1e-8 ? 0 : g.x / gmag
+    const gy = gmag < 1e-8 ? -1 : g.y / gmag
     const nx = -gx
     const ny = -gy
 
@@ -139,6 +140,7 @@ export class AnalyticFluidSolver {
         const area = polygonArea(clipped)
         if (area < 1e-8) continue
         const c = polygonCentroid(clipped)
+        // Archimedes: F = ρ A |g|. Vanishes in zero-g; drag below does not.
         const F = mat.density * area * gmag
         const fx = -gx * F
         const fy = -gy * F

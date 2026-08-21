@@ -40,8 +40,11 @@ export class SimulationEngine {
     this.doc = cloneDocument(doc)
   }
 
-  async init(): Promise<void> {
+  /** Build the Rapier world. If `isCurrent` returns false after WASM load, skip rebuild
+   * so a superseded mount (e.g. React Strict Mode) cannot destroy a newer session's world. */
+  async init(isCurrent?: () => boolean): Promise<void> {
     const R = await loadRapier()
+    if (isCurrent && !isCurrent()) return
     this.rebuild(R)
   }
 

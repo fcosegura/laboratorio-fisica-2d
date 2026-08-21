@@ -323,6 +323,22 @@ describe('joints', () => {
   })
 })
 
+describe('storm-boat experiment', () => {
+  it('keeps the hull near the waterline under buoyancy', async () => {
+    const exp = EXPERIMENTS.find((e) => e.id === 'storm-boat')!.build()
+    const engine = new SimulationEngine(exp)
+    await engine.init()
+    for (let i = 0; i < 180; i++) engine.stepOnce()
+    const hull = engine.curr.find((b) => b.id === 'body:hull')!
+    const surfaceY = exp.fluidRegions[0]!.restSurfaceY
+    // Densidad 450 vs agua 1000 → debe flotar, no hundirse al fondo.
+    expect(hull.y).toBeGreaterThan(surfaceY - 0.8)
+    expect(hull.y).toBeLessThan(surfaceY + 1.2)
+    expect(engine.world?.hasBody('body:cabin')).toBe(true)
+    engine.world?.destroy()
+  })
+})
+
 describe('buoyancy', () => {
   it('a less-dense body floats with submerged fraction ≈ ρ_body/ρ_fluid', async () => {
     const engine = new SimulationEngine(emptyScene())
@@ -423,6 +439,25 @@ describe('picking while paused', () => {
     for (let i = 0; i < 60; i++) engine.stepOnce()
     expect(engine.clock.playing).toBe(false)
     expect(engine.bodyAt(0, -0.25)).toBe('body:ground')
+    engine.world?.destroy()
+  })
+})
+
+describe('init session guard', () => {
+  it('skips rebuild when isCurrent returns false after WASM load', async () => {
+    const engine = new SimulationEngine(emptyScene())
+    await engine.init(() => false)
+    expect(engine.world).toBeNull()
+  })
+
+  it('does not destroy an existing world when a stale init finishes', async () => {
+    const engine = new SimulationEngine(emptyScene())
+    await engine.init()
+    const live = engine.world
+    expect(live).toBeTruthy()
+    await engine.init(() => false)
+    expect(engine.world).toBe(live)
+    expect(engine.world?.hasBody('body:ground')).toBe(true)
     engine.world?.destroy()
   })
 })

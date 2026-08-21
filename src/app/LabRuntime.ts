@@ -82,17 +82,15 @@ export class LabRuntime {
   async mount(canvas: HTMLCanvasElement): Promise<void> {
     const session = ++this.session
     this.canvas = canvas
-    await this.engine.init()
+    // Pass session guard into init: a stale mount must not rebuild after a newer
+    // mount already created the live world (React Strict Mode remount race).
+    await this.engine.init(() => session === this.session)
     if (session !== this.session) {
-      this.engine.world?.destroy()
-      this.engine.world = null
+      // Newer mount/dispose owns lifecycle. Do not destroy their world or renderer.
       return
     }
     await this.renderer.init(canvas)
     if (session !== this.session) {
-      this.renderer.destroy()
-      this.engine.world?.destroy()
-      this.engine.world = null
       return
     }
     this.bind(canvas)

@@ -62,3 +62,87 @@ describe('planeSpan', () => {
     expect(planeSpan(tank, 0, 1, 2.5)).toBeCloseTo(6, 6)
   })
 })
+
+describe('zero gravity fluid', () => {
+  it('applies drag but no buoyancy when |g| ≈ 0', async () => {
+    const { SimulationEngine } = await import('../src/sim/engine.ts')
+    const { emptyScene, GRAVITY_PRESETS } = await import('../src/scene/document.ts')
+    const doc = emptyScene()
+    doc.world.gravity = { ...GRAVITY_PRESETS.zero }
+    doc.world.gravityPreset = 'zero'
+    doc.bodies = [
+      {
+        id: 'body:ground',
+        name: 'Suelo',
+        type: 'fixed',
+        x: 0,
+        y: -0.2,
+        angle: 0,
+        vx: 0,
+        vy: 0,
+        omega: 0,
+        massMode: 'density',
+        density: 2600,
+        friction: 0,
+        restitution: 0,
+        materialId: 'stone',
+        gravityScale: 1,
+        linearDamping: 0,
+        angularDamping: 0,
+        ccd: false,
+        locked: true,
+        lockRotation: true,
+        shape: { kind: 'box', hx: 4, hy: 0.2 },
+      },
+      {
+        id: 'body:slug',
+        name: 'Slug',
+        type: 'dynamic',
+        x: 0,
+        y: 1.0,
+        angle: 0,
+        vx: 4,
+        vy: 0,
+        omega: 0,
+        massMode: 'density',
+        density: 600,
+        friction: 0,
+        restitution: 0,
+        materialId: 'wood',
+        gravityScale: 1,
+        linearDamping: 0,
+        angularDamping: 0,
+        ccd: false,
+        locked: false,
+        lockRotation: false,
+        shape: { kind: 'box', hx: 0.4, hy: 0.3 },
+      },
+    ]
+    doc.fluidRegions = [
+      {
+        id: 'fluid:1',
+        name: 'Agua',
+        polygon: [
+          { x: -3, y: 0 },
+          { x: 3, y: 0 },
+          { x: 3, y: 2.2 },
+          { x: -3, y: 2.2 },
+        ],
+        restSurfaceY: 2.2,
+        materialId: 'water',
+      },
+    ]
+    const engine = new SimulationEngine(doc)
+    await engine.init()
+    engine.play()
+    for (let i = 0; i < 90; i++) engine.advance(1 / 60)
+    const slug = engine.curr.find((b) => b.id === 'body:slug')!
+    expect(engine.fluids.samples.length).toBe(1)
+    expect(engine.fluids.debug.some((d) => d.bodyId === 'body:slug')).toBe(true)
+    // Drag should have slowed the slug; without fluid it would still be ≈ 4 m/s.
+    expect(Math.abs(slug.vx)).toBeLessThan(3.2)
+    // No net buoyancy in zero-g → y should stay near the start (tiny numerical drift only).
+    expect(Math.abs(slug.y - 1.0)).toBeLessThan(0.15)
+    engine.world?.destroy()
+  })
+})

@@ -80,6 +80,42 @@ function box(
   }
 }
 
+function convex(
+  id: string,
+  name: string,
+  x: number,
+  y: number,
+  vertices: { x: number; y: number }[],
+  materialId: string,
+  extra: Partial<SceneBody> = {},
+): SceneBody {
+  const mat = getSolid(materialId)
+  return {
+    id,
+    name,
+    type: extra.type ?? 'dynamic',
+    x,
+    y,
+    angle: extra.angle ?? 0,
+    vx: extra.vx ?? 0,
+    vy: extra.vy ?? 0,
+    omega: extra.omega ?? 0,
+    massMode: 'density',
+    density: extra.density ?? mat.density,
+    friction: extra.friction ?? mat.friction,
+    restitution: extra.restitution ?? mat.restitution,
+    materialId,
+    gravityScale: extra.gravityScale ?? 1,
+    linearDamping: extra.linearDamping ?? mat.linearDamping,
+    angularDamping: extra.angularDamping ?? mat.angularDamping,
+    ccd: extra.ccd ?? true,
+    locked: extra.locked ?? false,
+    lockRotation: extra.lockRotation ?? false,
+    ...extra,
+    shape: { kind: 'convex', vertices },
+  }
+}
+
 function base(name: string, description: string): SceneDocument {
   const doc = emptyScene(name)
   doc.meta.description = description
@@ -225,6 +261,164 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
       ]
       doc.camera = { x: 0, y: 1.6, pixelsPerMeter: 55 }
       doc.visualization.gravity = true
+      return doc
+    },
+  },
+  {
+    id: 'storm-boat',
+    title: 'Barco en tormenta',
+    build: () => {
+      // Fluido analítico = superficie plana (sin oleaje). La «tormenta» es
+      // basculación + ráfaga + granizo/escombros para probar flotación e impactos.
+      const doc = base(
+        'Barco en tormenta',
+        'Casco de madera en agua (Arquímedes 2D, superficie plana). Play: el barco ya va escorado; ' +
+          'granizo y cajas llegan con velocidad. Usa la herramienta Fuerza para soplar más viento.',
+      )
+      const surfaceY = 2.4
+      const hullX = 0
+      const hullY = surfaceY + 0.15
+      const hullAngle = (-18 * Math.PI) / 180
+      const c = Math.cos(hullAngle)
+      const s = Math.sin(hullAngle)
+      const place = (lx: number, ly: number) => ({
+        x: hullX + lx * c - ly * s,
+        y: hullY + lx * s + ly * c,
+      })
+      const cabinLocal = { x: -0.35, y: 0.52 }
+      const mastLocal = { x: 0.35, y: 0.95 }
+      const crateLocal = { x: 0.55, y: 0.42 }
+      const cabinPos = place(cabinLocal.x, cabinLocal.y)
+      const mastPos = place(mastLocal.x, mastLocal.y)
+      const cratePos = place(crateLocal.x, crateLocal.y)
+      const boatMotion = {
+        angle: hullAngle,
+        omega: -1.2,
+        vx: 0.6,
+        linearDamping: 0.35,
+        angularDamping: 0.45,
+        restitution: 0.05,
+      }
+      doc.bodies = [
+        box('body:ground', 'Fondo', 0, -0.25, 7, 0.25, 'stone', { type: 'fixed' }),
+        box('body:left', 'Muelle izq.', -6.6, 2.2, 0.2, 2.4, 'stone', { type: 'fixed' }),
+        box('body:right', 'Muelle der.', 6.6, 2.2, 0.2, 2.4, 'stone', { type: 'fixed' }),
+        convex(
+          'body:hull',
+          'Casco',
+          hullX,
+          hullY,
+          [
+            { x: -1.35, y: 0.22 },
+            { x: 1.45, y: 0.22 },
+            { x: 1.15, y: -0.12 },
+            { x: 0.35, y: -0.42 },
+            { x: -0.55, y: -0.42 },
+            { x: -1.25, y: -0.08 },
+          ],
+          'wood',
+          {
+            density: 450,
+            ...boatMotion,
+            friction: 0.4,
+            color: 0x8b5a2b,
+          },
+        ),
+        box('body:cabin', 'Cabina', cabinPos.x, cabinPos.y, 0.45, 0.28, 'wood', {
+          density: 350,
+          ...boatMotion,
+          color: 0xa67c52,
+        }),
+        box('body:mast', 'Mástil', mastPos.x, mastPos.y, 0.06, 0.7, 'wood', {
+          density: 400,
+          ...boatMotion,
+          color: 0x6b4423,
+        }),
+        box('body:crate', 'Caja de cubierta', cratePos.x, cratePos.y, 0.22, 0.18, 'wood', {
+          density: 700,
+          angle: hullAngle,
+          vx: 0.4,
+          friction: 0.35,
+          restitution: 0.1,
+        }),
+        box('body:debris-a', 'Restos A', -4.2, surfaceY + 0.35, 0.28, 0.2, 'wood', {
+          density: 500,
+          vx: 3.5,
+          vy: 0.2,
+          omega: 2,
+        }),
+        box('body:debris-b', 'Restos B', -5.2, surfaceY + 0.8, 0.2, 0.2, 'plastic', {
+          density: 800,
+          vx: 4.2,
+          vy: -0.5,
+          omega: -1.5,
+        }),
+        ball('body:hail-1', 'Granizo 1', -2.5, 5.2, 0.16, 'ice', {
+          vx: 2.5,
+          vy: -1,
+          restitution: 0.35,
+          ccd: true,
+        }),
+        ball('body:hail-2', 'Granizo 2', -1.2, 5.8, 0.12, 'ice', {
+          vx: 1.8,
+          vy: -0.5,
+          restitution: 0.35,
+          ccd: true,
+        }),
+        ball('body:hail-3', 'Granizo 3', 1.5, 5.5, 0.14, 'ice', {
+          vx: -0.8,
+          vy: -1.2,
+          restitution: 0.35,
+          ccd: true,
+        }),
+        ball('body:hail-4', 'Granizo 4', 3.2, 6.1, 0.18, 'stone', {
+          density: 1800,
+          vx: -2.2,
+          vy: -2,
+          restitution: 0.2,
+          ccd: true,
+        }),
+      ]
+      doc.joints = [
+        {
+          id: 'joint:cabin',
+          kind: 'fixed',
+          bodyA: 'body:hull',
+          bodyB: 'body:cabin',
+          anchorA: { x: cabinLocal.x, y: cabinLocal.y - 0.28 },
+          anchorB: { x: 0, y: -0.28 },
+          frameA: 0,
+          frameB: 0,
+        },
+        {
+          id: 'joint:mast',
+          kind: 'fixed',
+          bodyA: 'body:hull',
+          bodyB: 'body:mast',
+          anchorA: { x: mastLocal.x, y: mastLocal.y - 0.7 },
+          anchorB: { x: 0, y: -0.7 },
+          frameA: 0,
+          frameB: 0,
+        },
+      ]
+      doc.fluidRegions = [
+        {
+          id: 'fluid:sea',
+          name: 'Mar',
+          polygon: [
+            { x: -6.4, y: 0 },
+            { x: 6.4, y: 0 },
+            { x: 6.4, y: surfaceY },
+            { x: -6.4, y: surfaceY },
+          ],
+          restSurfaceY: surfaceY,
+          materialId: 'water',
+        },
+      ]
+      doc.camera = { x: 0, y: 2.4, pixelsPerMeter: 42 }
+      doc.visualization.velocity = true
+      doc.visualization.contacts = true
+      doc.visualization.gravity = false
       return doc
     },
   },
