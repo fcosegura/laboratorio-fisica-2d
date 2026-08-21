@@ -140,8 +140,9 @@ export class AnalyticFluidSolver {
         const area = polygonArea(clipped)
         if (area < 1e-8) continue
         const c = polygonCentroid(clipped)
-        // Archimedes: F = ρ A |g|. Vanishes in zero-g; drag below does not.
-        const F = mat.density * area * gmag
+        // Archimedes: F = ρ A |g| · gravityScale. Vanishes in zero-g or gravityScale 0.
+        // Drag / torque damping below stay independent of gravityScale (viscous, not weight).
+        const F = mat.density * area * gmag * item.body.gravityScale
         const fx = -gx * F
         const fy = -gy * F
         const v = { x: item.snap.vx, y: item.snap.vy }

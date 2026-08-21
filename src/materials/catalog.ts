@@ -3,7 +3,7 @@ import type { MaterialId } from '../core/ids.ts'
 export type SolidMaterial = {
   id: MaterialId
   name: string
-  /** kg / m² in 2D. */
+  /** kg/m² (≡ kg/m³ con espesor 1 m). Valores numéricos = ρ 3D habitual; no cambiar sin recalibrar flotación. */
   density: number
   friction: number
   restitution: number
@@ -127,3 +127,9 @@ export function getSolid(id: string): SolidMaterial {
 export function getFluid(id: string): FluidMaterial {
   return FLUID_MATERIALS.find((m) => m.id === id) ?? FLUID_MATERIALS[0]!
 }
+
+/**
+ * Contrato `materialId`: entradas del catálogo = presets one-shot (`applySolidPreset`).
+ * En runtime la verdad son los campos planos de SceneBody; `bodyToDesc` solo reconsulta
+ * `getSolid` como fallback de densidad. No hay enlace vivo catálogo ↔ cuerpo.
+ */

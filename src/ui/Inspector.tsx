@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
+import { applySolidPreset } from '../materials/applyPreset.ts'
 import { SOLID_MATERIALS } from '../materials/catalog.ts'
 import {
   JOINT_KIND_META,
@@ -22,6 +23,7 @@ export function Inspector() {
   const live = useLabStore((s) => s.live)
   const open = useLabStore((s) => s.inspectorOpen)
   const playing = useLabStore((s) => s.playing)
+  const fluidCount = useLabStore((s) => s.fluidCount)
 
   if (!open) return null
 
@@ -78,14 +80,7 @@ export function Inspector() {
               className="field"
               value={body.materialId}
               onChange={(e) => {
-                const mat = SOLID_MATERIALS.find((m) => m.id === e.target.value)
-                if (!mat) return
-                lab.commitPatch(body.id, {
-                  materialId: mat.id,
-                  density: mat.density,
-                  friction: mat.friction,
-                  restitution: mat.restitution,
-                })
+                lab.commitPatch(body.id, applySolidPreset(e.target.value, body))
               }}
             >
               {SOLID_MATERIALS.map((m) => (
@@ -94,6 +89,12 @@ export function Inspector() {
                 </option>
               ))}
             </select>
+            {body.massMode === 'explicit' && (
+              <p className="mt-1 text-[11px] text-muted">
+                Con masa explícita el material no cambia densidad ni masa; solo fricción,
+                restitución y amortiguación.
+              </p>
+            )}
           </Field>
           <Field label="Masa">
             <select
@@ -114,7 +115,7 @@ export function Inspector() {
             </select>
             {body.massMode === 'density' ? (
               <Num
-                label="Densidad (kg/m²)"
+                label="Densidad · kg/m² (≡ kg/m³ con espesor 1 m)"
                 value={body.density}
                 descriptor={PROPERTY_DESCRIPTORS.density}
                 onChange={(v) => lab.commitPatch(body.id, { density: v, massMode: 'density' })}
@@ -131,6 +132,11 @@ export function Inspector() {
               masa actual {live?.mass?.toFixed(3) ?? '—'} kg
               {body.massMode === 'density' ? ' (derivada)' : ''}
             </div>
+            {body.massMode === 'explicit' && fluidCount > 0 && (
+              <p className="mt-1 text-[11px] text-muted">
+                Con fluido y masa explícita, la flotación ya no sigue ρ_material/ρ_fluido.
+              </p>
+            )}
           </Field>
           <div className="grid grid-cols-2 gap-2">
             <Num

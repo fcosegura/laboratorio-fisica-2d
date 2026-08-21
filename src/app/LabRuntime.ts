@@ -4,7 +4,7 @@ import { dist } from '../core/math/vec2.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import { inverseTransformPoint, transformPoint } from '../core/math/transform.ts'
 import { dragToForce, dragToImpulse, forceAnchorWorld } from '../interaction/force.ts'
-import { getSolid } from '../materials/catalog.ts'
+import { applySolidPreset } from '../materials/applyPreset.ts'
 import { createCamera, screenToWorld, zoomAt, zoomToFit, type Camera } from '../camera/coords.ts'
 import type { Tool } from '../interaction/tools.ts'
 import { Tool as ToolId } from '../interaction/tools.ts'
@@ -558,7 +558,6 @@ export class LabRuntime {
     materialId: string,
     extra: Partial<SceneBody> = {},
   ): SceneBody {
-    const mat = getSolid(materialId)
     return {
       id,
       name,
@@ -569,17 +568,11 @@ export class LabRuntime {
       vx: 0,
       vy: 0,
       omega: 0,
-      massMode: 'density',
-      density: mat.density,
-      friction: mat.friction,
-      restitution: mat.restitution,
-      materialId,
       gravityScale: 1,
-      linearDamping: mat.linearDamping,
-      angularDamping: mat.angularDamping,
       ccd: true,
       locked: extra.locked ?? false,
       lockRotation: extra.lockRotation ?? false,
+      ...applySolidPreset(materialId),
       ...extra,
       shape,
     }

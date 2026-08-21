@@ -1,4 +1,4 @@
-import { getSolid } from '../materials/catalog.ts'
+import { applySolidPreset } from '../materials/applyPreset.ts'
 import {
   DEFAULT_VIZ,
   emptyScene,
@@ -16,7 +16,6 @@ function ball(
   materialId: string,
   extra: Partial<SceneBody> = {},
 ): SceneBody {
-  const mat = getSolid(materialId)
   return {
     id,
     name,
@@ -27,17 +26,11 @@ function ball(
     vx: 0,
     vy: 0,
     omega: 0,
-    massMode: 'density',
-    density: mat.density,
-    friction: mat.friction,
-    restitution: mat.restitution,
-    materialId,
     gravityScale: 1,
-    linearDamping: mat.linearDamping,
-    angularDamping: mat.angularDamping,
     ccd: false,
     locked: false,
     lockRotation: false,
+    ...applySolidPreset(materialId),
     shape: { kind: 'circle', radius },
     ...extra,
   }
@@ -53,7 +46,6 @@ function box(
   materialId: string,
   extra: Partial<SceneBody> = {},
 ): SceneBody {
-  const mat = getSolid(materialId)
   return {
     id,
     name,
@@ -64,17 +56,11 @@ function box(
     vx: extra.vx ?? 0,
     vy: extra.vy ?? 0,
     omega: extra.omega ?? 0,
-    massMode: 'density',
-    density: extra.density ?? mat.density,
-    friction: extra.friction ?? mat.friction,
-    restitution: extra.restitution ?? mat.restitution,
-    materialId,
     gravityScale: extra.gravityScale ?? 1,
-    linearDamping: extra.linearDamping ?? mat.linearDamping,
-    angularDamping: extra.angularDamping ?? mat.angularDamping,
     ccd: extra.ccd ?? false,
     locked: extra.locked ?? extra.type === 'fixed',
     lockRotation: extra.lockRotation ?? extra.type === 'fixed',
+    ...applySolidPreset(materialId),
     ...extra,
     shape: extra.shape ?? { kind: 'box', hx, hy },
   }
@@ -89,7 +75,6 @@ function convex(
   materialId: string,
   extra: Partial<SceneBody> = {},
 ): SceneBody {
-  const mat = getSolid(materialId)
   return {
     id,
     name,
@@ -100,17 +85,11 @@ function convex(
     vx: extra.vx ?? 0,
     vy: extra.vy ?? 0,
     omega: extra.omega ?? 0,
-    massMode: 'density',
-    density: extra.density ?? mat.density,
-    friction: extra.friction ?? mat.friction,
-    restitution: extra.restitution ?? mat.restitution,
-    materialId,
     gravityScale: extra.gravityScale ?? 1,
-    linearDamping: extra.linearDamping ?? mat.linearDamping,
-    angularDamping: extra.angularDamping ?? mat.angularDamping,
     ccd: extra.ccd ?? true,
     locked: extra.locked ?? false,
     lockRotation: extra.lockRotation ?? false,
+    ...applySolidPreset(materialId),
     ...extra,
     shape: { kind: 'convex', vertices },
   }

@@ -5,6 +5,13 @@ import type { PhysicsWorld } from '../physics/ports.ts'
 import type { SceneBody, SceneDocument } from './document.ts'
 import { jointToDesc } from './joints.ts'
 
+/**
+ * Única traducción SceneBody → BodyDesc.
+ *
+ * Contrato `materialId`: el catálogo es un preset one-shot (`applySolidPreset`); la verdad en
+ * runtime son los campos planos del SceneBody (friction, restitution, density, …). Aquí solo se
+ * reconsulta el catálogo como fallback de densidad si `body.density` es falsy.
+ */
 export function bodyToDesc(body: SceneBody): BodyDesc {
   const mat = getSolid(body.materialId)
   const collider = {

@@ -422,6 +422,81 @@ describe('buoyancy', () => {
     expect(Math.abs(fraction - expected)).toBeLessThan(0.15)
     engine.world?.destroy()
   })
+
+  it('applies no buoyant force when gravityScale is 0', async () => {
+    const engine = new SimulationEngine(emptyScene())
+    await engine.init()
+    engine.doc.bodies = [
+      {
+        id: 'floor',
+        name: 'Suelo',
+        type: 'fixed',
+        x: 0,
+        y: -0.2,
+        angle: 0,
+        vx: 0,
+        vy: 0,
+        omega: 0,
+        massMode: 'density',
+        density: 2600,
+        friction: 0,
+        restitution: 0,
+        materialId: 'stone',
+        gravityScale: 1,
+        linearDamping: 0,
+        angularDamping: 0,
+        ccd: false,
+        locked: true,
+        lockRotation: true,
+        shape: { kind: 'box', hx: 4, hy: 0.2 },
+      },
+      {
+        id: 'wood',
+        name: 'Madera',
+        type: 'dynamic',
+        x: 0,
+        y: 1.0,
+        angle: 0,
+        vx: 0,
+        vy: 0,
+        omega: 0,
+        massMode: 'density',
+        density: 600,
+        friction: 0,
+        restitution: 0,
+        materialId: 'wood',
+        gravityScale: 0,
+        linearDamping: 0,
+        angularDamping: 0,
+        ccd: false,
+        locked: false,
+        lockRotation: true,
+        shape: { kind: 'box', hx: 0.5, hy: 0.25 },
+      },
+    ]
+    engine.doc.fluidRegions = [
+      {
+        id: 'water',
+        name: 'Agua',
+        polygon: [
+          { x: -3, y: 0 },
+          { x: 3, y: 0 },
+          { x: 3, y: 2.5 },
+          { x: -3, y: 2.5 },
+        ],
+        restSurfaceY: 2.5,
+        materialId: 'water',
+      },
+    ]
+    await engine.reload(engine.doc)
+    engine.stepOnce()
+    const dbg = engine.fluids.debug.find((d) => d.bodyId === 'wood')
+    expect(dbg).toBeTruthy()
+    expect(dbg!.area).toBeGreaterThan(0.05)
+    // At rest, drag ≈ 0; with gravityScale 0 Archimedes is 0 → net fluid force ≈ 0.
+    expect(Math.hypot(dbg!.fx, dbg!.fy)).toBeLessThan(1e-6)
+    engine.world?.destroy()
+  })
 })
 
 describe('picking while paused', () => {
@@ -468,5 +543,143 @@ describe('analytic fluid helpers', () => {
     expect(solver).toBeTruthy()
     expect(polygonArea([{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 1 }, { x: 0, y: 1 }])).toBeCloseTo(2)
     expect(getSolid('wood').density).toBe(600)
+  })
+})
+
+describe('Rapier coefficient combine rules', () => {
+  type ColliderProbe = {
+    frictionCombineRule(): number
+    restitutionCombineRule(): number
+  }
+  type WorldColliders = { colliders: Map<string, ColliderProbe[]> }
+
+  it('sets friction Min and restitution Max on every collider', async () => {
+    const R = await loadRapier()
+    const world = new RapierWorld(R, { x: 0, y: 0 }, PHYSICS_DT)
+    const ice = getSolid('ice')
+    const stone = getSolid('stone')
+    world.addBody({
+      id: 'ice',
+      type: 'dynamic',
+      translation: { x: 0, y: 1 },
+      rotation: 0,
+      colliders: [
+        { shape: { kind: 'box', hx: 0.2, hy: 0.2 }, density: ice.density, friction: ice.friction, restitution: ice.restitution },
+      ],
+    })
+    world.addBody({
+      id: 'stone',
+      type: 'fixed',
+      translation: { x: 0, y: 0 },
+      rotation: 0,
+      colliders: [
+        {
+          shape: { kind: 'box', hx: 2, hy: 0.1 },
+          density: stone.density,
+          friction: stone.friction,
+          restitution: stone.restitution,
+        },
+      ],
+    })
+    const cols = (world as unknown as WorldColliders).colliders
+    for (const id of ['ice', 'stone'] as const) {
+      const list = cols.get(id)!
+      expect(list.length).toBeGreaterThan(0)
+      for (const c of list) {
+        expect(c.frictionCombineRule()).toBe(R.CoefficientCombineRule.Min)
+        expect(c.restitutionCombineRule()).toBe(R.CoefficientCombineRule.Max)
+      }
+    }
+    world.destroy()
+  })
+
+  it('ice vs stone slides like μ = min (not average)', async () => {
+    const R = await loadRapier()
+    const ice = getSolid('ice')
+    const stone = getSolid('stone')
+    const muMin = Math.min(ice.friction, stone.friction)
+    const muAvg = (ice.friction + stone.friction) / 2
+    expect(muMin).toBeLessThan(muAvg * 0.5)
+
+    async function travelAfterSlide(muFloor: number, muBlock: number): Promise<number> {
+      const world = new RapierWorld(R, { x: 0, y: -9.81 }, PHYSICS_DT)
+      world.addBody({
+        id: 'floor',
+        type: 'fixed',
+        translation: { x: 0, y: -0.1 },
+        rotation: 0,
+        colliders: [{ shape: { kind: 'box', hx: 20, hy: 0.1 }, density: 1, friction: muFloor, restitution: 0 }],
+      })
+      world.addBody({
+        id: 'block',
+        type: 'dynamic',
+        translation: { x: 0, y: 0.25 },
+        rotation: 0,
+        lockRotation: true,
+        linearDamping: 0,
+        angularDamping: 0,
+        colliders: [{ shape: { kind: 'box', hx: 0.25, hy: 0.25 }, density: 900, friction: muBlock, restitution: 0 }],
+      })
+      for (let i = 0; i < 30; i++) world.step()
+      world.setVelocity('block', 5, 0, 0)
+      const steps = Math.round(1.5 / PHYSICS_DT)
+      for (let i = 0; i < steps; i++) world.step()
+      const x = world.getBody('block')!.x
+      world.destroy()
+      return x
+    }
+
+    const withMaterials = await travelAfterSlide(stone.friction, ice.friction)
+    const withAverage = await travelAfterSlide(muAvg, muAvg)
+    // Min → μ_eff ≈ 0.05 slides much farther than Average → μ_eff ≈ 0.375.
+    expect(withMaterials).toBeGreaterThan(withAverage * 1.5)
+  })
+
+  it('rubber vs metal bounces like e = max (not average)', async () => {
+    const R = await loadRapier()
+    const rubber = getSolid('rubber')
+    const metal = getSolid('metal')
+    const eMax = Math.max(rubber.restitution, metal.restitution)
+    const eAvg = (rubber.restitution + metal.restitution) / 2
+    expect(eMax).toBeGreaterThan(eAvg * 1.3)
+
+    async function peakBounce(eFloor: number, eBall: number): Promise<number> {
+      const dropY = 2
+      const world = new RapierWorld(R, { x: 0, y: -9.81 }, PHYSICS_DT)
+      world.addBody({
+        id: 'floor',
+        type: 'fixed',
+        translation: { x: 0, y: -0.1 },
+        rotation: 0,
+        colliders: [{ shape: { kind: 'box', hx: 5, hy: 0.1 }, density: 1, friction: 0, restitution: eFloor }],
+      })
+      world.addBody({
+        id: 'ball',
+        type: 'dynamic',
+        translation: { x: 0, y: dropY },
+        rotation: 0,
+        linearDamping: 0,
+        angularDamping: 0,
+        colliders: [{ shape: { kind: 'circle', radius: 0.2 }, density: 1100, friction: 0, restitution: eBall }],
+      })
+      let peak = 0
+      let seenContact = false
+      const steps = Math.round(3 / PHYSICS_DT)
+      for (let i = 0; i < steps; i++) {
+        world.step()
+        const b = world.getBody('ball')!
+        if (b.y < 0.4) seenContact = true
+        if (seenContact && b.vy > 0) peak = Math.max(peak, b.y)
+      }
+      world.destroy()
+      return peak
+    }
+
+    const withMaterials = await peakBounce(metal.restitution, rubber.restitution)
+    const withAverage = await peakBounce(eAvg, eAvg)
+    // Max → e_eff ≈ 0.75 reaches higher than Average → e_eff ≈ 0.475.
+    expect(withMaterials).toBeGreaterThan(withAverage * 1.3)
+    // Ideal rebound height scales ~ e²; Max should clear ~0.35 of drop height.
+    expect(withMaterials).toBeGreaterThan(0.35 * 2)
   })
 })

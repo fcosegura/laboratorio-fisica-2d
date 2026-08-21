@@ -142,6 +142,11 @@ export class RapierWorld implements PhysicsWorld {
         }
         part.desc.setFriction(col.friction)
         part.desc.setRestitution(col.restitution)
+        // Lab pedagogy: ice "wins" (slides) and rubber "wins" (bounces).
+        // Rapier picks the higher-precedence rule across the contact pair; setting both
+        // sides to Min / Max makes μ_eff = min(μa, μb) and e_eff = max(ea, eb).
+        part.desc.setFrictionCombineRule(this.R.CoefficientCombineRule.Min)
+        part.desc.setRestitutionCombineRule(this.R.CoefficientCombineRule.Max)
         if (col.isSensor) part.desc.setSensor(true)
         if (col.offset) part.desc.setTranslation(col.offset.x, col.offset.y)
         if (col.angle) part.desc.setRotation(col.angle)
