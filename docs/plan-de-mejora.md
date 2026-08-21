@@ -130,8 +130,11 @@ Cada elemento aquí es una promesa del código o del README que hoy no se cumple
 es binaria; lo que no se implemente debe salir del tipo, del esquema y del README, no quedarse silenciado
 con un `void`.
 
-- Regiones de fluido borrables y editables: `RemoveFluidCommand` está escrito y nunca se llama; falta
-  inspector de región (material, nivel, polígono) (**B5**).
+- Regiones de fluido borrables y editables: `RemoveFluidCommand` / `UpdateFluidRegionCommand` +
+  inspector mínimo (material, `restSurfaceY`); picking y lista en el inspector (**B5**, parcial —
+  polígono aún no editable en lienzo).
+- **Solapes de regiones (D6, corto plazo):** aviso UI por AABB (`scene/fluidOverlap.ts`); el solver
+  sigue sumando fuerzas. Guard “mayor solape” aplazado para no pelear retuning de `AnalyticFluid`.
 - Formas sin herramienta de creación: cápsula, polilínea, segmento; y sin rama de dibujo: polilínea y
   compuesta (**B3**, **B4**).
 - Capas de visualización declaradas y no implementadas: `trajectories` (que un experimento activa),

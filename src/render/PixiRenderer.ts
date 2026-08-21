@@ -187,7 +187,7 @@ export class PixiRenderer {
     this.world.pivot.set(cam.x, cam.y)
 
     this.drawGrid(cam)
-    this.drawFluids(engine)
+    this.drawFluids(engine, selected)
     this.syncBodies(engine, selected)
     this.drawOverlay(engine, viz, interaction)
     this.drawLabels(engine, cam, viz, interaction, measureLabel)
@@ -227,7 +227,7 @@ export class PixiRenderer {
     }
   }
 
-  private drawFluids(engine: SimulationEngine): void {
+  private drawFluids(engine: SimulationEngine, selected: string[]): void {
     const g = this.fluids
     g.clear()
     for (const region of engine.doc.fluidRegions) {
@@ -243,9 +243,12 @@ export class PixiRenderer {
       if (clipped.length < 3) continue
       const pts = clipped.flatMap((p) => [p.x, p.y])
       g.poly(pts).fill({ color: mat.color, alpha: mat.opacity })
-      if (clipped.length) {
-        g.poly(pts).stroke({ color: 0xffffff, alpha: 0.35, width: 0.04 })
-      }
+      const selectedRegion = selected.includes(region.id)
+      g.poly(pts).stroke({
+        color: 0xffffff,
+        alpha: selectedRegion ? 0.95 : 0.35,
+        width: selectedRegion ? 0.08 : 0.04,
+      })
     }
 
     // Particle (PBF) fluids.

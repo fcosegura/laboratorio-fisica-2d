@@ -26,6 +26,7 @@ import {
   RemoveJointCommand,
   SetWorldCommand,
   UpdateBodyCommand,
+  UpdateFluidRegionCommand,
   UpdateJointCommand,
 } from '../scene/commands.ts'
 import { History } from '../scene/history.ts'
@@ -36,11 +37,14 @@ import {
   type GravityPreset,
   type SceneBody,
   type SceneDocument,
+  type SceneFluidRegion,
   type SceneJoint,
   type VizLayers,
 } from '../scene/document.ts'
 import { bodyToDesc } from '../scene/builder.ts'
 import { jointToDesc, reattachJoints, springParamsForMasses } from '../scene/joints.ts'
+import { fluidOverlapWarning } from '../scene/fluidOverlap.ts'
+import { pickFluidRegion } from '../scene/picking.ts'
 import { parseDocument, serializeDocument } from '../scene/schema.ts'
 import { SimulationEngine } from '../sim/engine.ts'
 import type { GraphChannel, LabStore } from './store.ts'
@@ -55,6 +59,8 @@ export class LabRuntime {
   ids = new IdFactory(10)
   state: InteractionState = { kind: 'idle' }
   selected: string[] = []
+  /** Región de fluido analítico seleccionada (independiente de cuerpos). */
+  selectedFluidId: string | null = null
   canvas: HTMLCanvasElement | null = null
   private raf = 0
   private lastT = 0
@@ -111,7 +117,7 @@ export class LabRuntime {
           this.engine,
           this.camera,
           this.store?.getState().viz ?? this.engine.doc.visualization,
-          this.selected,
+          this.selectedFluidId ? [...this.selected, this.selectedFluidId] : this.selected,
           this.state,
         )
       } catch (err) {
@@ -282,7 +288,28 @@ export class LabRuntime {
       } else {
         this.selected = res.selected
       }
+      if (res.selected.length) this.selectedFluidId = null
     }
+
+    // Select tool miss on bodies: try fluid region before marquee.
+    if (
+      this.tool() === 'select' &&
+      !hit &&
+      e.button === 0 &&
+      !this.store?.getState().spaceHeld &&
+      this.state.kind === 'selecting'
+    ) {
+      const fluidId = pickFluidRegion(this.engine.doc.fluidRegions, world.x, world.y)
+      if (fluidId) {
+        this.selected = []
+        this.selectedFluidId = fluidId
+        this.state = { kind: 'idle' }
+        this.pushUi()
+        return
+      }
+      this.selectedFluidId = null
+    }
+
     if (res.ensurePlaying) this.ensurePlaying()
     if (res.pushUi) this.pushUi()
   }
@@ -354,6 +381,7 @@ export class LabRuntime {
       }
       this.selected = found
       this.state = { kind: 'idle' }
+      this.selectedFluidId = null
       this.pushUi()
       return
     }
@@ -510,9 +538,10 @@ export class LabRuntime {
       if (maxX - minX < 0.2 || maxY - minY < 0.2) return
       const fluidMatId = this.store?.getState().fluidMaterialId ?? DEFAULT_FLUID
       const fluid = getFluid(fluidMatId)
+      const regionId = this.ids.next('fluid')
       this.history.apply(
         new AddFluidCommand({
-          id: this.ids.next('fluid'),
+          id: regionId,
           name: fluid.name,
           polygon: [
             { x: minX, y: minY },
@@ -524,6 +553,9 @@ export class LabRuntime {
           materialId: fluid.id,
         }),
       )
+      this.selected = []
+      this.selectedFluidId = regionId
+      this.pushUi()
     } else if (tool === 'spill') {
       const minX = Math.min(a.x, b.x)
       const maxX = Math.max(a.x, b.x)
@@ -587,6 +619,7 @@ export class LabRuntime {
     this.history.apply(new AddBodyCommand(body))
     this.engine.world?.addBody(bodyToDesc(body))
     this.selected = [body.id]
+    this.selectedFluidId = null
     this.engine.world?.writeBodies(this.engine.curr)
     this.pushUi()
   }
@@ -647,7 +680,30 @@ export class LabRuntime {
     this.pushUi()
   }
 
+  commitFluidPatch(id: string, patch: Partial<SceneFluidRegion>): void {
+    this.history.apply(new UpdateFluidRegionCommand(id, patch))
+    // Samples vienen del último physicsStep; sin invalidar, el fill en pausa queda congelado.
+    if (patch.restSurfaceY !== undefined || patch.polygon !== undefined) {
+      this.engine.fluids.samples.length = 0
+      this.engine.fluids.debug.length = 0
+    }
+    this.pushUi()
+  }
+
+  selectFluidRegion(id: string | null): void {
+    this.selected = []
+    this.selectedFluidId = id
+    this.pushUi()
+  }
+
   deleteSelected(): void {
+    if (this.selectedFluidId) {
+      const id = this.selectedFluidId
+      this.history.apply(new RemoveFluidCommand(id))
+      this.selectedFluidId = null
+      this.pushUi()
+      return
+    }
     const commands = []
     for (const id of this.selected) {
       commands.push(new RemoveBodyCommand(id))
@@ -717,6 +773,7 @@ export class LabRuntime {
     ]
     this.history.apply(commands.length === 1 ? commands[0]! : new BatchCommand(commands))
     this.engine.particles.retainVolumes(new Set(this.engine.doc.fluidVolumes.map((v) => v.id)))
+    this.selectedFluidId = null
     this.pushUi()
   }
 
@@ -757,6 +814,7 @@ export class LabRuntime {
       this.history.apply(new BatchCommand(commands))
     }
     this.selected = created
+    this.selectedFluidId = null
     this.pushUi()
   }
 
@@ -818,6 +876,7 @@ export class LabRuntime {
   async loadDocument(doc: SceneDocument): Promise<void> {
     this.history.clear()
     this.selected = []
+    this.selectedFluidId = null
     this.camera = { ...doc.camera }
     const allIds = [
       ...doc.bodies.map((b) => b.id),
@@ -927,12 +986,20 @@ export class LabRuntime {
             return { ...structuredClone(j), otherName: other?.name ?? otherId }
           })
       : []
+    const selectedFluid =
+      this.engine.doc.fluidRegions.find((r) => r.id === this.selectedFluidId) ?? null
+    // Undo/redo o borrar puede dejar un id huérfano; no empujar región fantasma a React.
+    if (this.selectedFluidId && !selectedFluid) this.selectedFluidId = null
     store.setState({
       playing: this.engine.clock.playing,
       timeScale: this.engine.clock.timeScale,
       simTime: this.engine.clock.simTime,
       selectedId: selected?.id ?? null,
       selectedBody: selected ? structuredClone(selected) : null,
+      selectedFluidId: selectedFluid?.id ?? null,
+      selectedFluidRegion: selectedFluid ? structuredClone(selectedFluid) : null,
+      fluidRegionOptions: this.engine.doc.fluidRegions.map((r) => ({ id: r.id, name: r.name })),
+      fluidOverlapWarning: fluidOverlapWarning(this.engine.doc.fluidRegions),
       selectedJoints,
       live: snap
         ? {

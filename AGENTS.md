@@ -94,7 +94,7 @@ Contratos:
 
 Ya está corregido (no reviertas): arrastre en pausa con `orig` de la pose viva; `bodyToDesc` unificado; cola de `reload`; guardias `freed`; AABBs de cápsula/convex/polyline; picking por geometría; `appliedForces` por paso; `Num` con confirmación.
 
-Sigue abierto (el plan en `docs/plan-de-mejora.md`): `syncWorld` incremental en undo/redo (hoy hay `reload` completo); transacciones `history.begin/commit`; extraer `LabRuntime`; inspector de regiones de fluido; capas `trajectories` / `colliders` reales; asas de rotar/escalar.
+Sigue abierto (el plan en `docs/plan-de-mejora.md`): `syncWorld` incremental en undo/redo (hoy hay `reload` completo); transacciones `history.begin/commit`; extraer `LabRuntime`; edición de polígono de regiones de fluido; capas `trajectories` / `colliders` reales; asas de rotar/escalar.
 
 ## Pruebas
 

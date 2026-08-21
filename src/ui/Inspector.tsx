@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { applySolidPreset } from '../materials/applyPreset.ts'
-import { SOLID_MATERIALS } from '../materials/catalog.ts'
+import { FLUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
 import {
   JOINT_KIND_META,
   type BodyType,
@@ -19,6 +19,9 @@ import {
 export function Inspector() {
   const lab = useLab()
   const body = useLabStore((s) => s.selectedBody)
+  const fluid = useLabStore((s) => s.selectedFluidRegion)
+  const fluidOptions = useLabStore((s) => s.fluidRegionOptions)
+  const fluidOverlap = useLabStore((s) => s.fluidOverlapWarning)
   const joints = useLabStore((s) => s.selectedJoints)
   const live = useLabStore((s) => s.live)
   const open = useLabStore((s) => s.inspectorOpen)
@@ -30,7 +33,82 @@ export function Inspector() {
   return (
     <aside className="w-72 shrink-0 overflow-y-auto border-l border-line bg-panel p-3 text-sm">
       <div className="mb-3 text-xs uppercase tracking-wide text-muted">Inspector</div>
-      {!body && <p className="text-muted">Selecciona un objeto para editar sus propiedades.</p>}
+      {fluidOverlap && <p className="mb-3 text-[11px] text-muted">{fluidOverlap}</p>}
+      {!body && !fluid && (
+        <div className="flex flex-col gap-3">
+          <p className="text-muted">Selecciona un objeto o una región de fluido.</p>
+          {fluidOptions.length > 0 && (
+            <Field label="Regiones de fluido">
+              <select
+                className="field"
+                value=""
+                onChange={(e) => {
+                  const id = e.target.value
+                  if (id) lab.selectFluidRegion(id)
+                }}
+              >
+                <option value="">Elegir región…</option>
+                {fluidOptions.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+        </div>
+      )}
+      {fluid && !body && (
+        <div className="flex flex-col gap-3">
+          <div className="text-[11px] uppercase tracking-wide text-muted">Región de fluido</div>
+          <TextField
+            label="Nombre"
+            value={fluid.name}
+            onChange={(name) => lab.commitFluidPatch(fluid.id, { name })}
+          />
+          <Field label="Material">
+            <select
+              className="field"
+              value={fluid.materialId}
+              onChange={(e) => lab.commitFluidPatch(fluid.id, { materialId: e.target.value })}
+            >
+              {FLUID_MATERIALS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Num
+            label="Superficie en reposo (m)"
+            value={fluid.restSurfaceY}
+            descriptor={PROPERTY_DESCRIPTORS.restSurfaceY}
+            onChange={(v) => lab.commitFluidPatch(fluid.id, { restSurfaceY: v })}
+          />
+          {fluidOptions.length > 1 && (
+            <Field label="Otra región">
+              <select
+                className="field"
+                value={fluid.id}
+                onChange={(e) => lab.selectFluidRegion(e.target.value)}
+              >
+                {fluidOptions.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <button
+            type="button"
+            className="rounded-md border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10"
+            onClick={() => lab.deleteSelected()}
+          >
+            Eliminar región
+          </button>
+        </div>
+      )}
       {body && (
         <div className="flex flex-col gap-3">
           <TextField

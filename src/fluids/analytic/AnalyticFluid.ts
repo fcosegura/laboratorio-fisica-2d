@@ -32,6 +32,18 @@ export type BuoyancyDebug = {
   fy: number
 }
 
+/** Default quadratic drag coefficient (bluff body in 2D). */
+export const DEFAULT_DRAG_CD = 1.0
+
+/**
+ * Linear (Stokes-like) drag: b = k μ L, L = √A.
+ * k ~ 4π keeps water lab-scale quadratic-dominated (μ≈0.001) while honey (μ≈10) is clear.
+ */
+export const STOKES_DRAG_K = 4 * Math.PI
+
+/** Angular drag: τ = −c ρ A R² ω with R² := A (submerged). Dimensionally kg·m²/s in 2D. */
+export const TORQUE_DRAG_C = 0.15
+
 function bodyPolygon(body: SceneBody, snap: BodySnapshot): Vec2[] {
   const s = body.shape
   if (s.kind === 'circle') return circleToPolygon(snap.x, snap.y, s.radius, 28)
@@ -78,6 +90,78 @@ export function planeSpan(poly: Vec2[], nx: number, ny: number, d: number): numb
   return max - min
 }
 
+/** Projected width of a polygon onto unit axis (ux, uy). Used as A_proj in 2D. */
+export function projectedSpan(poly: readonly Vec2[], ux: number, uy: number): number {
+  if (poly.length === 0) return 0
+  let min = poly[0]!.x * ux + poly[0]!.y * uy
+  let max = min
+  for (let i = 1; i < poly.length; i++) {
+    const s = poly[i]!.x * ux + poly[i]!.y * uy
+    if (s < min) min = s
+    if (s > max) max = s
+  }
+  return Math.max(0, max - min)
+}
+
+/**
+ * Rest free-surface plane offset d for half-plane n·p ≤ d.
+ * Maps authored `restSurfaceY` (world-Y fill when g∥−Y) to a fill fraction along n̂
+ * so tilted gravity keeps a coherent semiplane anchored to the tank polygon.
+ */
+export function restPlaneD(
+  tank: readonly Vec2[],
+  nx: number,
+  ny: number,
+  restSurfaceY: number,
+): number {
+  if (tank.length === 0) return ny * restSurfaceY
+  let yMin = tank[0]!.y
+  let yMax = yMin
+  let sMin = nx * tank[0]!.x + ny * tank[0]!.y
+  let sMax = sMin
+  for (let i = 1; i < tank.length; i++) {
+    const p = tank[i]!
+    if (p.y < yMin) yMin = p.y
+    if (p.y > yMax) yMax = p.y
+    const s = nx * p.x + ny * p.y
+    if (s < sMin) sMin = s
+    if (s > sMax) sMax = s
+  }
+  const ySpan = yMax - yMin
+  const fillFrac =
+    ySpan > 1e-9 ? Math.min(1, Math.max(0, (restSurfaceY - yMin) / ySpan)) : 1
+  return sMin + fillFrac * (sMax - sMin)
+}
+
+/** Quadratic + linear drag: F_d = −½ Cd ρ A_proj |v| v − b(μ,L) v. */
+export function fluidDragForce(
+  vx: number,
+  vy: number,
+  density: number,
+  viscosity: number,
+  submerged: readonly Vec2[],
+  area: number,
+  cd = DEFAULT_DRAG_CD,
+): Vec2 {
+  const speed = Math.hypot(vx, vy)
+  const L = Math.sqrt(Math.max(area, 0))
+  const b = STOKES_DRAG_K * viscosity * L
+  let aProj = L
+  if (speed > 1e-8 && submerged.length >= 2) {
+    // Width facing the flow: span ⊥ v̂.
+    aProj = projectedSpan(submerged, -vy / speed, vx / speed)
+    if (aProj < 1e-8) aProj = L
+  }
+  const scale = 0.5 * cd * density * aProj * speed + b
+  return { x: -scale * vx, y: -scale * vy }
+}
+
+/** Viscous/angular fluid torque: τ = −c ρ A R² ω, R² := A. */
+export function fluidTorqueDamp(density: number, area: number, omega: number): number {
+  const r2 = Math.max(area, 0)
+  return -TORQUE_DRAG_C * density * area * r2 * omega
+}
+
 export class AnalyticFluidSolver {
   readonly samples: FluidSample[] = []
   readonly debug: BuoyancyDebug[] = []
@@ -103,7 +187,7 @@ export class AnalyticFluidSolver {
 
     for (const region of regions) {
       const mat = getFluid(region.materialId)
-      const dRest = ny * region.restSurfaceY
+      const dRest = restPlaneD(region.polygon, nx, ny, region.restSurfaceY)
       let displaced = 0
       const contributions: { body: SceneBody; snap: BodySnapshot; originalPoly: Vec2[] }[] = []
 
@@ -123,7 +207,7 @@ export class AnalyticFluidSolver {
 
       const width = Math.max(0.05, planeSpan(region.polygon, nx, ny, dRest))
       const clipD = dRest + displaced / width
-      const surfaceY = ny !== 0 ? clipD / ny : region.restSurfaceY
+      const surfaceY = Math.abs(ny) > 1e-8 ? clipD / ny : region.restSurfaceY
       this.samples.push({
         regionId: region.id,
         surfaceY,
@@ -145,23 +229,24 @@ export class AnalyticFluidSolver {
         const F = mat.density * area * gmag * item.body.gravityScale
         const fx = -gx * F
         const fy = -gy * F
-        const v = { x: item.snap.vx, y: item.snap.vy }
-        const speed = Math.hypot(v.x, v.y)
-        const charLen = Math.sqrt(area)
-        const quad = 0.5 * mat.density * charLen * speed
-        const stokes = 4 * Math.PI * mat.viscosity
-        const dfx = -(quad + stokes) * v.x
-        const dfy = -(quad + stokes) * v.y
-        const torqueDamp = -item.snap.omega * mat.density * area * 0.15
-        world.applyForce(item.body.id, fx + dfx, fy + dfy, c)
+        const drag = fluidDragForce(
+          item.snap.vx,
+          item.snap.vy,
+          mat.density,
+          mat.viscosity,
+          clipped,
+          area,
+        )
+        const torqueDamp = fluidTorqueDamp(mat.density, area, item.snap.omega)
+        world.applyForce(item.body.id, fx + drag.x, fy + drag.y, c)
         world.applyTorque(item.body.id, torqueDamp)
         this.debug.push({
           bodyId: item.body.id,
           area,
           cx: c.x,
           cy: c.y,
-          fx: fx + dfx,
-          fy: fy + dfy,
+          fx: fx + drag.x,
+          fy: fy + drag.y,
         })
       }
     }

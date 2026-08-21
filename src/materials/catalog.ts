@@ -13,12 +13,15 @@ export type SolidMaterial = {
   accent?: number
 }
 
+/**
+ * Propiedades de fluido usadas por el motor (densidad, viscosidad para arrastre).
+ * No modelamos capilaridad: no hay campo de tensión superficial en el contrato activo.
+ */
 export type FluidMaterial = {
   id: MaterialId
   name: string
   density: number
   viscosity: number
-  surfaceTension: number
   color: number
   opacity: number
 }
@@ -35,8 +38,18 @@ export const SOLID_MATERIALS: readonly SolidMaterial[] = [
     color: 0xc48a4a,
   },
   {
+    id: 'cork',
+    name: 'Corcho',
+    density: 200,
+    friction: 0.4,
+    restitution: 0.1,
+    linearDamping: 0.06,
+    angularDamping: 0.06,
+    color: 0xd2b48c,
+  },
+  {
     id: 'metal',
-    name: 'Metal',
+    name: 'Acero',
     density: 7800,
     friction: 0.4,
     restitution: 0.2,
@@ -93,7 +106,6 @@ export const FLUID_MATERIALS: readonly FluidMaterial[] = [
     name: 'Agua',
     density: 1000,
     viscosity: 0.001,
-    surfaceTension: 0.072,
     color: 0x3aa0d8,
     opacity: 0.55,
   },
@@ -102,7 +114,6 @@ export const FLUID_MATERIALS: readonly FluidMaterial[] = [
     name: 'Aceite',
     density: 900,
     viscosity: 0.08,
-    surfaceTension: 0.03,
     color: 0xc9a227,
     opacity: 0.6,
   },
@@ -111,7 +122,6 @@ export const FLUID_MATERIALS: readonly FluidMaterial[] = [
     name: 'Miel',
     density: 1400,
     viscosity: 10,
-    surfaceTension: 0.08,
     color: 0xd97706,
     opacity: 0.7,
   },
@@ -120,12 +130,30 @@ export const FLUID_MATERIALS: readonly FluidMaterial[] = [
 export const DEFAULT_SOLID = 'wood'
 export const DEFAULT_FLUID = 'water'
 
+function resolveOrFallback<T extends { id: string }>(
+  kind: 'sólido' | 'fluido',
+  id: string,
+  list: readonly T[],
+  fallbackId: string,
+): T {
+  const found = list.find((m) => m.id === id)
+  if (found) return found
+  const fallback = list.find((m) => m.id === fallbackId) ?? list[0]!
+  const msg = `[materials] Material ${kind} desconocido '${id}'`
+  if (import.meta.env.DEV) {
+    console.error(msg)
+    throw new Error(msg)
+  }
+  console.error(`${msg}; usando fallback '${fallback.id}'`)
+  return fallback
+}
+
 export function getSolid(id: string): SolidMaterial {
-  return SOLID_MATERIALS.find((m) => m.id === id) ?? SOLID_MATERIALS[0]!
+  return resolveOrFallback('sólido', id, SOLID_MATERIALS, DEFAULT_SOLID)
 }
 
 export function getFluid(id: string): FluidMaterial {
-  return FLUID_MATERIALS.find((m) => m.id === id) ?? FLUID_MATERIALS[0]!
+  return resolveOrFallback('fluido', id, FLUID_MATERIALS, DEFAULT_FLUID)
 }
 
 /**

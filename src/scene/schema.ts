@@ -140,6 +140,19 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
           path: ['bodies', i, 'materialId'],
         })
       }
+
+      // Polilínea/segmento: área nula → densidad no define masa. Solo fixed, o masa explícita.
+      const zeroArea =
+        b.shape.kind === 'polyline' || b.shape.kind === 'segment'
+      if (zeroArea && b.type === 'dynamic' && b.massMode === 'density') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `El cuerpo '${b.name}' es ${b.shape.kind} (área 0): no puede ser dinámico con massMode='density'. ` +
+            `Usa type='fixed' o massMode='explicit' con masa > 0`,
+          path: ['bodies', i, 'massMode'],
+        })
+      }
     }
 
     const jointIds = new Set<string>()

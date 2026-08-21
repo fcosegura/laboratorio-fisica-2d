@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { emptyScene } from './document.ts'
-import { pickBody, shapeContains } from './picking.ts'
+import { pickBody, pickFluidRegion, shapeContains } from './picking.ts'
 import type { PhysicsShape } from '../physics/ports.ts'
 
 describe('pickBody', () => {
@@ -142,6 +142,38 @@ describe('shapeContains for all shapes', () => {
     }
     expect(shapeContains(convex, { x: 1, y: 0.5 })).toBe(true)
     expect(shapeContains(convex, { x: 3, y: 3 })).toBe(false)
+  })
+})
+
+describe('pickFluidRegion', () => {
+  it('hits the top-most region containing the point', () => {
+    const a = {
+      id: 'f1',
+      name: 'A',
+      polygon: [
+        { x: 0, y: 0 },
+        { x: 2, y: 0 },
+        { x: 2, y: 2 },
+        { x: 0, y: 2 },
+      ],
+      restSurfaceY: 2,
+      materialId: 'water',
+    }
+    const b = {
+      id: 'f2',
+      name: 'B',
+      polygon: [
+        { x: 1, y: 1 },
+        { x: 3, y: 1 },
+        { x: 3, y: 3 },
+        { x: 1, y: 3 },
+      ],
+      restSurfaceY: 3,
+      materialId: 'oil',
+    }
+    expect(pickFluidRegion([a, b], 1.5, 1.5)).toBe('f2')
+    expect(pickFluidRegion([a, b], 0.5, 0.5)).toBe('f1')
+    expect(pickFluidRegion([a, b], 10, 10)).toBeNull()
   })
 })
 

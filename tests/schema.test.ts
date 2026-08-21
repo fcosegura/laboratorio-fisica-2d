@@ -165,6 +165,120 @@ describe('schema cross-validation & migration', () => {
     expect(() => parseDocument(json)).toThrow(/debe ser convexo/)
   })
 
+  it('rejects unknown solid materialId', () => {
+    const doc = emptyScene()
+    doc.bodies[0]!.materialId = 'unobtanium'
+    const json = JSON.stringify(doc)
+    expect(() => parseDocument(json)).toThrow(/Material desconocido/)
+  })
+
+  it('rejects unknown fluid materialId on regions', () => {
+    const doc = emptyScene()
+    doc.fluidRegions.push({
+      id: 'fluid:1',
+      name: 'Mystery',
+      polygon: [
+        { x: 0, y: 0 },
+        { x: 2, y: 0 },
+        { x: 1, y: 2 },
+      ],
+      restSurfaceY: 1,
+      materialId: 'unobtanium',
+    })
+    const json = JSON.stringify(doc)
+    expect(() => parseDocument(json)).toThrow(/Material de fluido desconocido/)
+  })
+
+  it('rejects dynamic polyline/segment with massMode density (zero area)', () => {
+    const doc = emptyScene()
+    doc.bodies.push({
+      id: 'body:seg',
+      name: 'Segmento dinámico',
+      type: 'dynamic',
+      x: 0,
+      y: 0,
+      angle: 0,
+      vx: 0,
+      vy: 0,
+      omega: 0,
+      massMode: 'density',
+      density: 1000,
+      friction: 0.5,
+      restitution: 0.2,
+      materialId: 'wood',
+      gravityScale: 1,
+      linearDamping: 0,
+      angularDamping: 0,
+      ccd: false,
+      locked: false,
+      lockRotation: false,
+      shape: { kind: 'segment', a: { x: -1, y: 0 }, b: { x: 1, y: 0 } },
+    })
+    expect(() => parseDocument(JSON.stringify(doc))).toThrow(/área 0/)
+
+    doc.bodies[doc.bodies.length - 1]!.shape = {
+      kind: 'polyline',
+      vertices: [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 1, y: 1 },
+      ],
+    }
+    expect(() => parseDocument(JSON.stringify(doc))).toThrow(/área 0/)
+  })
+
+  it('accepts fixed segment and dynamic segment with explicit mass', () => {
+    const doc = emptyScene()
+    doc.bodies.push({
+      id: 'body:seg-fixed',
+      name: 'Segmento fijo',
+      type: 'fixed',
+      x: 0,
+      y: 0,
+      angle: 0,
+      vx: 0,
+      vy: 0,
+      omega: 0,
+      massMode: 'density',
+      density: 1000,
+      friction: 0.5,
+      restitution: 0.2,
+      materialId: 'wood',
+      gravityScale: 1,
+      linearDamping: 0,
+      angularDamping: 0,
+      ccd: false,
+      locked: true,
+      lockRotation: true,
+      shape: { kind: 'segment', a: { x: -1, y: 0 }, b: { x: 1, y: 0 } },
+    })
+    doc.bodies.push({
+      id: 'body:seg-explicit',
+      name: 'Segmento con masa',
+      type: 'dynamic',
+      x: 0,
+      y: 1,
+      angle: 0,
+      vx: 0,
+      vy: 0,
+      omega: 0,
+      massMode: 'explicit',
+      mass: 2,
+      density: 1000,
+      friction: 0.5,
+      restitution: 0.2,
+      materialId: 'wood',
+      gravityScale: 1,
+      linearDamping: 0,
+      angularDamping: 0,
+      ccd: false,
+      locked: false,
+      lockRotation: false,
+      shape: { kind: 'segment', a: { x: -0.5, y: 0 }, b: { x: 0.5, y: 0 } },
+    })
+    expect(() => parseDocument(JSON.stringify(doc))).not.toThrow()
+  })
+
   it('migrates unversioned documents to current schemaVersion', () => {
     const raw = emptyScene() as unknown as Record<string, unknown>
     delete raw.schemaVersion

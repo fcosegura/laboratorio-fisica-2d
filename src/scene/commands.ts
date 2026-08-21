@@ -138,6 +138,37 @@ export class RemoveFluidCommand implements Command {
   }
 }
 
+export class UpdateFluidRegionCommand implements Command {
+  id: string
+  patch: Partial<SceneFluidRegion>
+  prev: Partial<SceneFluidRegion> | null = null
+  constructor(
+    id: string,
+    patch: Partial<SceneFluidRegion>,
+    explicitPrev?: Partial<SceneFluidRegion>,
+  ) {
+    this.id = id
+    this.patch = patch
+    if (explicitPrev) {
+      this.prev = structuredClone(explicitPrev)
+    }
+  }
+  apply(doc: SceneDocument): void {
+    const region = doc.fluidRegions.find((r) => r.id === this.id)
+    if (!region) return
+    if (!this.prev) {
+      this.prev = structuredClone(region)
+    }
+    Object.assign(region, this.patch)
+  }
+  invert(doc: SceneDocument): void {
+    const region = doc.fluidRegions.find((r) => r.id === this.id)
+    if (region && this.prev) {
+      Object.assign(region, this.prev)
+    }
+  }
+}
+
 export class AddFluidVolumeCommand implements Command {
   volume: SceneFluidVolume
   constructor(volume: SceneFluidVolume) {

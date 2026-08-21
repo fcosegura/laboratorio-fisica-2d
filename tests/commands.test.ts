@@ -14,6 +14,7 @@ import {
   RemoveFluidVolumeCommand,
   SetWorldCommand,
   UpdateBodyCommand,
+  UpdateFluidRegionCommand,
 } from '../src/scene/commands.ts'
 
 function sampleBody(id: string, x = 0): SceneBody {
@@ -132,6 +133,41 @@ describe('scene commands & index preservation', () => {
     expect(doc.fluidVolumes.map((f) => f.id)).toEqual(['v1', 'v3'])
     history.undo()
     expect(doc.fluidVolumes.map((f) => f.id)).toEqual(['v1', 'v2', 'v3'])
+  })
+
+  it('UpdateFluidRegionCommand undoes material and restSurfaceY', () => {
+    let doc: SceneDocument = emptyScene()
+    const history = new History(
+      () => doc,
+      (d) => {
+        doc = d
+      },
+    )
+    const region: SceneFluidRegion = {
+      id: 'f1',
+      name: 'Tanque',
+      polygon: [
+        { x: 0, y: 0 },
+        { x: 2, y: 0 },
+        { x: 2, y: 2 },
+        { x: 0, y: 2 },
+      ],
+      restSurfaceY: 1.5,
+      materialId: 'water',
+    }
+    doc.fluidRegions.push(region)
+
+    history.apply(new UpdateFluidRegionCommand('f1', { materialId: 'oil', restSurfaceY: 1.2 }))
+    expect(doc.fluidRegions[0]!.materialId).toBe('oil')
+    expect(doc.fluidRegions[0]!.restSurfaceY).toBe(1.2)
+
+    history.undo()
+    expect(doc.fluidRegions[0]!.materialId).toBe('water')
+    expect(doc.fluidRegions[0]!.restSurfaceY).toBe(1.5)
+
+    history.redo()
+    expect(doc.fluidRegions[0]!.materialId).toBe('oil')
+    expect(doc.fluidRegions[0]!.restSurfaceY).toBe(1.2)
   })
 
   it('UpdateBodyCommand with explicit previous state restores recorded state', () => {

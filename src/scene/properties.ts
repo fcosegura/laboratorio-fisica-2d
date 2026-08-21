@@ -30,6 +30,7 @@ export const PROPERTY_DESCRIPTORS = {
   stiffness: { min: 0, max: 1_000_000, step: 10, label: 'Rigidez' },
   damping: { min: 0, max: 10_000, step: 0.5, label: 'Amortiguación' },
   restLength: { min: 0, max: 1000, step: 0.05, unit: 'm', label: 'Longitud' },
+  restSurfaceY: { step: 0.01, unit: 'm', label: 'Superficie en reposo' },
 } as const satisfies Record<string, PropertyDescriptor>
 
 export function clampProperty(value: number, desc?: PropertyDescriptor): number {

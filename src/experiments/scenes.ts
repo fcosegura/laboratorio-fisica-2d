@@ -431,8 +431,7 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
         wall('body:cup-bottom', 'Fondo vaso', 0, 0, 0.55, 0.08),
         wall('body:cup-left', 'Pared izq.', -0.5, 0.45, 0.08, 0.5),
         wall('body:cup-right', 'Pared der.', 0.5, 0.45, 0.08, 0.5),
-        ball('body:cork', 'Corcho', 1.8, 2.2, 0.18, 'wood', {
-          density: 400,
+        ball('body:cork', 'Corcho', 1.8, 2.2, 0.18, 'cork', {
           vx: -1.5,
           vy: 0.5,
         }),

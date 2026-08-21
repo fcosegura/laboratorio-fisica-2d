@@ -3,6 +3,7 @@ import {
   DEFAULT_VIZ,
   type JointKindUi,
   type SceneBody,
+  type SceneFluidRegion,
   type SceneJoint,
   type VizLayers,
 } from '../scene/document.ts'
@@ -59,6 +60,12 @@ export type LabUiState = {
   simTime: number
   selectedId: string | null
   selectedBody: SceneBody | null
+  selectedFluidId: string | null
+  selectedFluidRegion: SceneFluidRegion | null
+  /** Aviso muted cuando hay regiones de fluido con AABB solapado. */
+  fluidOverlapWarning: string | null
+  /** Lista plana para el selector del inspector (id + nombre). */
+  fluidRegionOptions: { id: string; name: string }[]
   selectedJoints: JointUi[]
   live: LiveBody | null
   bodyCount: number
@@ -86,6 +93,10 @@ export const useLabStore = create<LabUiState>(() => ({
   simTime: 0,
   selectedId: null,
   selectedBody: null,
+  selectedFluidId: null,
+  selectedFluidRegion: null,
+  fluidOverlapWarning: null,
+  fluidRegionOptions: [],
   selectedJoints: [],
   live: null,
   bodyCount: 0,

@@ -2,7 +2,7 @@ import { inverseTransformPoint, type Transform } from '../core/math/transform.ts
 import { pointInPolygon } from '../core/math/polygon.ts'
 import { distToSegment, type Vec2 } from '../core/math/vec2.ts'
 import type { PhysicsShape } from '../physics/ports.ts'
-import type { SceneBody } from './document.ts'
+import type { SceneBody, SceneFluidRegion } from './document.ts'
 
 export type BodyPose = Pick<Transform, 'x' | 'y' | 'angle'> & { id?: string }
 
@@ -47,6 +47,22 @@ export function pickBody(
     const pose: Transform = snap ?? body
     const local = inverseTransformPoint({ x: 0, y: 0 }, world, pose)
     if (shapeContains(body.shape, local)) return body.id
+  }
+  return null
+}
+
+/** Top-most fluid region whose polygon contains the world point (last in array wins). */
+export function pickFluidRegion(
+  regions: readonly SceneFluidRegion[],
+  x: number,
+  y: number,
+): string | null {
+  const world = { x, y }
+  for (let i = regions.length - 1; i >= 0; i--) {
+    const region = regions[i]!
+    if (region.polygon.length >= 3 && pointInPolygon(world, region.polygon)) {
+      return region.id
+    }
   }
   return null
 }
