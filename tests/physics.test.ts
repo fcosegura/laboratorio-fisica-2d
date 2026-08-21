@@ -339,6 +339,69 @@ describe('storm-boat experiment', () => {
   })
 })
 
+describe('float/sink pedagogical experiments (fluidRegions)', () => {
+  function speed(b: { vx: number; vy: number }): number {
+    return Math.hypot(b.vx, b.vy)
+  }
+
+  it('wood-splash: floats near the waterline after drop', async () => {
+    const exp = EXPERIMENTS.find((e) => e.id === 'wood-splash')!.build()
+    expect(exp.fluidRegions.length).toBe(1)
+    expect(exp.fluidVolumes.length).toBe(0)
+    const surfaceY = exp.fluidRegions[0]!.restSurfaceY
+    const engine = new SimulationEngine(exp)
+    await engine.init()
+    engine.play()
+    let maxSpeed = 0
+    let hitFluid = false
+    for (let i = 0; i < 300; i++) {
+      engine.advance(1 / 60)
+      const wood = engine.curr.find((b) => b.id === 'body:wood')!
+      const sp = speed(wood)
+      if (sp > maxSpeed) maxSpeed = sp
+      if (engine.fluids.debug.some((d) => d.bodyId === 'body:wood')) hitFluid = true
+    }
+    const wood = engine.curr.find((b) => b.id === 'body:wood')!
+    const finalSp = speed(wood)
+    expect(hitFluid).toBe(true)
+    // ρ_wood/ρ_water ≈ 0.6 → centro cerca de la superficie, no en el fondo.
+    expect(wood.y).toBeGreaterThan(surfaceY - 0.5)
+    expect(wood.y).toBeLessThan(surfaceY + 0.6)
+    expect(finalSp).toBeLessThan(Math.max(2.0, maxSpeed * 0.6))
+    engine.world?.destroy()
+  })
+
+  it('stone-sinks: dense body reaches near the pool floor', async () => {
+    const exp = EXPERIMENTS.find((e) => e.id === 'stone-sinks')!.build()
+    expect(exp.fluidRegions.length).toBe(1)
+    expect(exp.fluidVolumes.length).toBe(0)
+    const engine = new SimulationEngine(exp)
+    await engine.init()
+    engine.play()
+    for (let i = 0; i < 300; i++) engine.advance(1 / 60)
+    const rock = engine.curr.find((b) => b.id === 'body:rock')!
+    expect(rock.y).toBeLessThan(0.7)
+    expect(rock.y).toBeGreaterThan(0.15)
+    engine.world?.destroy()
+  })
+
+  it('dual-drop: wood stays higher than stone', async () => {
+    const exp = EXPERIMENTS.find((e) => e.id === 'dual-drop')!.build()
+    expect(exp.fluidRegions.length).toBe(2)
+    expect(exp.fluidVolumes.length).toBe(0)
+    const engine = new SimulationEngine(exp)
+    await engine.init()
+    engine.play()
+    for (let i = 0; i < 280; i++) engine.advance(1 / 60)
+    const wood = engine.curr.find((b) => b.id === 'body:wood')!
+    const rock = engine.curr.find((b) => b.id === 'body:rock')!
+    expect(wood.y).toBeGreaterThan(rock.y + 0.25)
+    expect(wood.y).toBeGreaterThan(0.45)
+    expect(rock.y).toBeLessThan(0.85)
+    engine.world?.destroy()
+  })
+})
+
 describe('buoyancy', () => {
   it('a less-dense body floats with submerged fraction ≈ ρ_body/ρ_fluid', async () => {
     const engine = new SimulationEngine(emptyScene())

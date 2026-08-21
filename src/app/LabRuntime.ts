@@ -5,6 +5,7 @@ import type { Vec2 } from '../core/math/vec2.ts'
 import { inverseTransformPoint, transformPoint } from '../core/math/transform.ts'
 import { dragToForce, dragToImpulse, forceAnchorWorld } from '../interaction/force.ts'
 import { applySolidPreset } from '../materials/applyPreset.ts'
+import { getFluid, DEFAULT_FLUID } from '../materials/catalog.ts'
 import { createCamera, screenToWorld, zoomAt, zoomToFit, type Camera } from '../camera/coords.ts'
 import type { Tool } from '../interaction/tools.ts'
 import { Tool as ToolId } from '../interaction/tools.ts'
@@ -507,10 +508,12 @@ export class LabRuntime {
       const minY = Math.min(a.y, b.y)
       const maxY = Math.max(a.y, b.y)
       if (maxX - minX < 0.2 || maxY - minY < 0.2) return
+      const fluidMatId = this.store?.getState().fluidMaterialId ?? DEFAULT_FLUID
+      const fluid = getFluid(fluidMatId)
       this.history.apply(
         new AddFluidCommand({
           id: this.ids.next('fluid'),
-          name: 'Agua',
+          name: fluid.name,
           polygon: [
             { x: minX, y: minY },
             { x: maxX, y: minY },
@@ -518,7 +521,7 @@ export class LabRuntime {
             { x: minX, y: maxY },
           ],
           restSurfaceY: maxY,
-          materialId: 'water',
+          materialId: fluid.id,
         }),
       )
     } else if (tool === 'spill') {
@@ -527,17 +530,19 @@ export class LabRuntime {
       const minY = Math.min(a.y, b.y)
       const maxY = Math.max(a.y, b.y)
       if (maxX - minX < 0.2 || maxY - minY < 0.2) return
+      const fluidMatId = this.store?.getState().fluidMaterialId ?? DEFAULT_FLUID
+      const fluid = getFluid(fluidMatId)
       this.history.apply(
         new AddFluidVolumeCommand({
           id: this.ids.next('fluid'),
-          name: 'Fluido libre',
+          name: `${fluid.name} libre`,
           polygon: [
             { x: minX, y: minY },
             { x: maxX, y: minY },
             { x: maxX, y: maxY },
             { x: minX, y: maxY },
           ],
-          materialId: 'water',
+          materialId: fluid.id,
           spacing: 0.1,
         }),
       )

@@ -524,39 +524,39 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'wood-splash',
     title: 'Madera al agua',
     build: () => {
+      const surfaceY = 1.6
       const doc = base(
         'Madera al agua',
-        'Bloque de madera (ρ≈600) cae desde 3 m sobre una piscina de fluido libre. ' +
-          'Debe amortiguar el impacto y flotar. Compara con el tanque analítico (W).',
+        'Bloque de madera (ρ≈600) cae sobre agua analítica (Arquímedes, superficie plana). ' +
+          'Flota con fracción sumergida ≈ ρ_madera / ρ_agua. Misma física que «Flotación».',
       )
       doc.bodies = [
         box('body:ground', 'Suelo', 0, -0.25, 7, 0.25, 'stone', { type: 'fixed' }),
         box('body:left', 'Pared izq.', -2.2, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
         box('body:right', 'Pared der.', 2.2, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
         box('body:wood', 'Madera', 0, 2.6, 0.4, 0.22, 'wood', {
-          density: 600,
           linearDamping: 0.15,
           angularDamping: 0.2,
           restitution: 0.1,
           lockRotation: true,
         }),
       ]
-      doc.fluidVolumes = [
+      doc.fluidRegions = [
         {
           id: 'fluid:pool',
           name: 'Piscina',
           polygon: [
-            { x: -2.0, y: 0.05 },
-            { x: 2.0, y: 0.05 },
-            { x: 2.0, y: 1.6 },
-            { x: -2.0, y: 1.6 },
+            { x: -2.0, y: 0 },
+            { x: 2.0, y: 0 },
+            { x: 2.0, y: surfaceY },
+            { x: -2.0, y: surfaceY },
           ],
+          restSurfaceY: surfaceY,
           materialId: 'water',
-          spacing: 0.1,
         },
       ]
       doc.camera = { x: 0, y: 1.8, pixelsPerMeter: 55 }
-      doc.visualization.fluidParticles = true
+      doc.visualization.gravity = true
       doc.visualization.velocity = true
       return doc
     },
@@ -565,38 +565,38 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'stone-sinks',
     title: 'Piedra que se hunde',
     build: () => {
+      const surfaceY = 1.6
       const doc = base(
         'Piedra que se hunde',
-        'Piedra (ρ≈2600) cae en el mismo tipo de piscina. Debe hundirse hasta el fondo ' +
-          'mientras la madera flotaría. Arrastre del fluido amortigua la caída.',
+        'Piedra (ρ≈2600) cae en el mismo tanque analítico. Como ρ > ρ_agua, se hunde hasta el fondo; ' +
+          'el arrastre amortigua la caída. Contrasta con «Madera al agua».',
       )
       doc.bodies = [
         box('body:ground', 'Suelo', 0, -0.25, 7, 0.25, 'stone', { type: 'fixed' }),
         box('body:left', 'Pared izq.', -2.2, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
         box('body:right', 'Pared der.', 2.2, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
         box('body:rock', 'Piedra', 0, 3.0, 0.28, 0.28, 'stone', {
-          density: 2600,
           linearDamping: 0.05,
           restitution: 0.05,
           lockRotation: true,
         }),
       ]
-      doc.fluidVolumes = [
+      doc.fluidRegions = [
         {
           id: 'fluid:pool',
           name: 'Piscina',
           polygon: [
-            { x: -2.0, y: 0.05 },
-            { x: 2.0, y: 0.05 },
-            { x: 2.0, y: 1.6 },
-            { x: -2.0, y: 1.6 },
+            { x: -2.0, y: 0 },
+            { x: 2.0, y: 0 },
+            { x: 2.0, y: surfaceY },
+            { x: -2.0, y: surfaceY },
           ],
+          restSurfaceY: surfaceY,
           materialId: 'water',
-          spacing: 0.1,
         },
       ]
       doc.camera = { x: 0, y: 1.6, pixelsPerMeter: 55 }
-      doc.visualization.fluidParticles = true
+      doc.visualization.gravity = true
       return doc
     },
   },
@@ -604,9 +604,11 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     id: 'dual-drop',
     title: 'Flota vs hunde',
     build: () => {
+      const surfaceY = 1.5
       const doc = base(
         'Flota vs hunde',
-        'Madera (izq.) y piedra (der.) caen a la vez en fluido libre. Compara trayectorias.',
+        'Madera (izq., ρ≈600) y piedra (der., ρ≈2600) caen a la vez en agua analítica (Arquímedes). ' +
+          'Compara flotación vs hundimiento con la misma física que «Flotación».',
       )
       doc.bodies = [
         box('body:ground', 'Suelo', 0, -0.25, 8, 0.25, 'stone', { type: 'fixed' }),
@@ -614,44 +616,42 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
         box('body:mid', 'Separador', 0, 0.7, 0.08, 0.8, 'stone', { type: 'fixed' }),
         box('body:right', 'Pared der.', 3.0, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
         box('body:wood', 'Madera', -1.4, 3.0, 0.35, 0.2, 'wood', {
-          density: 600,
           lockRotation: true,
           linearDamping: 0.1,
         }),
         box('body:rock', 'Piedra', 1.4, 3.0, 0.28, 0.28, 'stone', {
-          density: 2600,
           lockRotation: true,
           linearDamping: 0.05,
         }),
       ]
-      doc.fluidVolumes = [
+      doc.fluidRegions = [
         {
           id: 'fluid:left',
           name: 'Piscina izq.',
           polygon: [
-            { x: -2.8, y: 0.05 },
-            { x: -0.15, y: 0.05 },
-            { x: -0.15, y: 1.5 },
-            { x: -2.8, y: 1.5 },
+            { x: -2.8, y: 0 },
+            { x: -0.15, y: 0 },
+            { x: -0.15, y: surfaceY },
+            { x: -2.8, y: surfaceY },
           ],
+          restSurfaceY: surfaceY,
           materialId: 'water',
-          spacing: 0.11,
         },
         {
           id: 'fluid:right',
           name: 'Piscina der.',
           polygon: [
-            { x: 0.15, y: 0.05 },
-            { x: 2.8, y: 0.05 },
-            { x: 2.8, y: 1.5 },
-            { x: 0.15, y: 1.5 },
+            { x: 0.15, y: 0 },
+            { x: 2.8, y: 0 },
+            { x: 2.8, y: surfaceY },
+            { x: 0.15, y: surfaceY },
           ],
+          restSurfaceY: surfaceY,
           materialId: 'water',
-          spacing: 0.11,
         },
       ]
       doc.camera = { x: 0, y: 1.6, pixelsPerMeter: 48 }
-      doc.visualization.fluidParticles = true
+      doc.visualization.gravity = true
       doc.visualization.velocity = true
       return doc
     },

@@ -1,7 +1,8 @@
 /**
- * Automated evaluation of particle-fluid behaviour across authored experiments
- * and synthetic scenarios. Failures indicate physics regressions; console metrics
- * summarize pass/fail for manual review.
+ * Automated evaluation of particle-fluid (PBF) behaviour across authored particle
+ * experiments (vaso / spill) and synthetic scenarios. Float/sink pedagogy demos
+ * use fluidRegions and are covered in physics.test.ts.
+ * Failures indicate physics regressions; console metrics summarize pass/fail for manual review.
  */
 import { describe, expect, it } from 'vitest'
 import { SimulationEngine } from '../src/sim/engine.ts'
@@ -56,73 +57,6 @@ describe('particle fluid evaluation', () => {
     expect(frac).toBeGreaterThan(0.85)
     expect(s.cy).toBeGreaterThan(0.25)
     expect(s.cy).toBeLessThan(1.4)
-    engine.world?.destroy()
-  })
-
-  it('wood splash: floats after drop and impact speed is damped', async () => {
-    const exp = EXPERIMENTS.find((e) => e.id === 'wood-splash')!.build()
-    const engine = new SimulationEngine(exp)
-    await engine.init()
-    engine.play()
-
-    let maxSpeed = 0
-    let speedAtImpact = 0
-    let hitFluid = false
-    for (let i = 0; i < 300; i++) {
-      engine.advance(1 / 60)
-      const wood = engine.curr.find((b) => b.id === 'body:wood')!
-      const sp = speed(wood)
-      if (sp > maxSpeed) maxSpeed = sp
-      const buoy = engine.particles.buoyancyDebug.some((d) => d.bodyId === 'body:wood')
-      if (buoy && !hitFluid) {
-        hitFluid = true
-        speedAtImpact = sp
-      }
-    }
-    const wood = engine.curr.find((b) => b.id === 'body:wood')!
-    const finalSp = speed(wood)
-    console.log('[eval wood-splash]', {
-      y: wood.y.toFixed(3),
-      maxSpeed: maxSpeed.toFixed(3),
-      speedAtImpact: speedAtImpact.toFixed(3),
-      finalSp: finalSp.toFixed(3),
-      buoySamples: engine.particles.buoyancyDebug.filter((d) => d.bodyId === 'body:wood').length,
-    })
-    expect(hitFluid).toBe(true)
-    expect(wood.y).toBeGreaterThan(0.35)
-    expect(wood.y).toBeLessThan(4.0)
-    // Settled: much slower than free-fall peak
-    expect(finalSp).toBeLessThan(Math.max(2.0, maxSpeed * 0.6))
-    engine.world?.destroy()
-  })
-
-  it('stone sinks: dense body reaches near the pool floor', async () => {
-    const exp = EXPERIMENTS.find((e) => e.id === 'stone-sinks')!.build()
-    const engine = await run(exp, 300)
-    const rock = engine.curr.find((b) => b.id === 'body:rock')!
-    console.log('[eval stone-sinks]', {
-      y: rock.y.toFixed(3),
-      speed: speed(rock).toFixed(3),
-      buoy: engine.particles.buoyancyDebug.some((d) => d.bodyId === 'body:rock'),
-    })
-    expect(rock.y).toBeLessThan(0.7)
-    expect(rock.y).toBeGreaterThan(0.15)
-    engine.world?.destroy()
-  })
-
-  it('dual-drop: wood stays higher than stone', async () => {
-    const exp = EXPERIMENTS.find((e) => e.id === 'dual-drop')!.build()
-    const engine = await run(exp, 280)
-    const wood = engine.curr.find((b) => b.id === 'body:wood')!
-    const rock = engine.curr.find((b) => b.id === 'body:rock')!
-    console.log('[eval dual-drop]', {
-      woodY: wood.y.toFixed(3),
-      rockY: rock.y.toFixed(3),
-      delta: (wood.y - rock.y).toFixed(3),
-    })
-    expect(wood.y).toBeGreaterThan(rock.y + 0.25)
-    expect(wood.y).toBeGreaterThan(0.45)
-    expect(rock.y).toBeLessThan(0.85)
     engine.world?.destroy()
   })
 

@@ -1,17 +1,21 @@
-import { SOLID_MATERIALS } from '../materials/catalog.ts'
+import { FLUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { TOOL_META, type Tool } from '../interaction/tools.ts'
 import { JOINT_KIND_META } from '../scene/document.ts'
+
+const FLUID_TOOLS: ReadonlySet<Tool> = new Set(['fluid', 'spill'])
 
 export function Toolbar() {
   const lab = useLab()
   const tool = useLabStore((s) => s.tool)
   const jointKind = useLabStore((s) => s.jointKind)
   const materialId = useLabStore((s) => s.materialId)
+  const fluidMaterialId = useLabStore((s) => s.fluidMaterialId)
   const viz = useLabStore((s) => s.viz)
   const canUndo = useLabStore((s) => s.canUndo)
   const canRedo = useLabStore((s) => s.canRedo)
+  const fluidTool = FLUID_TOOLS.has(tool)
 
   return (
     <aside className="flex w-16 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-line bg-panel py-2">
@@ -74,16 +78,31 @@ export function Toolbar() {
         </>
       )}
       <div className="my-1 h-px w-8 bg-line" />
-      {SOLID_MATERIALS.map((m) => (
-        <button
-          key={m.id}
-          type="button"
-          title={m.name}
-          onClick={() => useLabStore.setState({ materialId: m.id })}
-          className={`h-6 w-6 rounded-full border ${materialId === m.id ? 'border-accent' : 'border-line'}`}
-          style={{ background: `#${m.color.toString(16).padStart(6, '0')}` }}
-        />
-      ))}
+      {fluidTool
+        ? FLUID_MATERIALS.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              title={m.name}
+              onClick={() => useLabStore.setState({ fluidMaterialId: m.id })}
+              className={`h-6 w-6 rounded-full border ${
+                fluidMaterialId === m.id ? 'border-accent' : 'border-line'
+              }`}
+              style={{ background: `#${m.color.toString(16).padStart(6, '0')}` }}
+            />
+          ))
+        : SOLID_MATERIALS.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              title={m.name}
+              onClick={() => useLabStore.setState({ materialId: m.id })}
+              className={`h-6 w-6 rounded-full border ${
+                materialId === m.id ? 'border-accent' : 'border-line'
+              }`}
+              style={{ background: `#${m.color.toString(16).padStart(6, '0')}` }}
+            />
+          ))}
       <div className="my-1 h-px w-8 bg-line" />
       {(
         [

@@ -9,6 +9,7 @@ import {
 import { Tool, type Tool as ToolId } from '../interaction/tools.ts'
 import type { GravityPreset } from '../scene/document.ts'
 import { CHANNEL_LABELS, type RecorderChannel } from '../sim/recorder.ts'
+import { DEFAULT_FLUID } from '../materials/catalog.ts'
 
 export { CHANNEL_LABELS }
 export type { RecorderChannel }
@@ -50,6 +51,8 @@ export type LabUiState = {
   tool: ToolId
   jointKind: JointKindUi
   materialId: string
+  /** Material de fluido al crear tanque (`fluid`) o derrame (`spill`). */
+  fluidMaterialId: string
   viz: VizLayers
   playing: boolean
   timeScale: number
@@ -76,6 +79,7 @@ export const useLabStore = create<LabUiState>(() => ({
   tool: Tool.select,
   jointKind: 'revolute',
   materialId: 'wood',
+  fluidMaterialId: DEFAULT_FLUID,
   viz: { ...DEFAULT_VIZ },
   playing: false,
   timeScale: 1,
