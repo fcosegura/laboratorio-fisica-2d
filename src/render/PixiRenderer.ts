@@ -166,6 +166,7 @@ export class PixiRenderer {
       includeAABB(box, aabbFromShape(b.shape, { x: b.x, y: b.y, angle: b.angle }))
     }
     for (const f of doc.fluidRegions) includeAABB(box, aabbFromPoints(f.polygon))
+    for (const v of doc.fluidVolumes) includeAABB(box, aabbFromPoints(v.polygon))
     return box
   }
 
@@ -244,6 +245,22 @@ export class PixiRenderer {
       g.poly(pts).fill({ color: mat.color, alpha: mat.opacity })
       if (clipped.length) {
         g.poly(pts).stroke({ color: 0xffffff, alpha: 0.35, width: 0.04 })
+      }
+    }
+
+    // Particle (PBF) fluids.
+    for (const p of engine.particles.particles) {
+      g.circle(p.x, p.y, 0.055).fill({ color: p.color, alpha: Math.min(0.85, p.opacity + 0.2) })
+    }
+
+    // Seed outlines when volumes exist but particles have not been built yet.
+    if (engine.particles.particleCount === 0) {
+      for (const vol of engine.doc.fluidVolumes) {
+        const mat = getFluid(vol.materialId)
+        const pts = vol.polygon.flatMap((p) => [p.x, p.y])
+        if (pts.length >= 6) {
+          g.poly(pts).stroke({ color: mat.color, alpha: 0.45, width: 0.03 })
+        }
       }
     }
   }
@@ -444,7 +461,7 @@ export class PixiRenderer {
       if (interaction.tool === 'circle') {
         const r = Math.max(0.05, Math.hypot(b.x - a.x, b.y - a.y))
         g.circle(a.x, a.y, r).stroke()
-      } else if (interaction.tool === 'rect' || interaction.tool === 'fluid') {
+      } else if (interaction.tool === 'rect' || interaction.tool === 'fluid' || interaction.tool === 'spill') {
         const minX = Math.min(a.x, b.x)
         const minY = Math.min(a.y, b.y)
         const w = Math.abs(b.x - a.x)
@@ -452,6 +469,8 @@ export class PixiRenderer {
         g.rect(minX, minY, w, h).stroke()
         if (interaction.tool === 'fluid')
           g.rect(minX, minY, w, h).fill({ color: 0x3aa0d8, alpha: 0.25 })
+        if (interaction.tool === 'spill')
+          g.rect(minX, minY, w, h).fill({ color: 0x2dd4bf, alpha: 0.3 })
       } else if (interaction.tool === 'line') {
         g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke()
       } else if (interaction.tool === 'polygon' && interaction.points) {

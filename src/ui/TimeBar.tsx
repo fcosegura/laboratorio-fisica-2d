@@ -108,7 +108,7 @@ export function TimeBar() {
         </Btn>
         <Btn
           onClick={() => lab.removeFluids()}
-          title="Quitar las regiones de fluido (empuje 2D, superficie plana)"
+          title="Quitar tanques analíticos y fluidos de partículas"
           disabled={fluidCount === 0}
         >
           Quitar fluido

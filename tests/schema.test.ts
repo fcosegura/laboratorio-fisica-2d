@@ -165,10 +165,21 @@ describe('schema cross-validation & migration', () => {
     expect(() => parseDocument(json)).toThrow(/debe ser convexo/)
   })
 
-  it('migrates unversioned documents to schemaVersion 1', () => {
+  it('migrates unversioned documents to current schemaVersion', () => {
     const raw = emptyScene() as unknown as Record<string, unknown>
     delete raw.schemaVersion
+    delete raw.fluidVolumes
     const migrated = migrateDocument(raw) as SceneDocument
-    expect(migrated.schemaVersion).toBe(1)
+    expect(migrated.schemaVersion).toBe(2)
+    expect(migrated.fluidVolumes).toEqual([])
+  })
+
+  it('migrates schemaVersion 1 fixtures to add fluidVolumes', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const text = readFileSync(join(import.meta.dirname, 'fixtures/scene-v1.json'), 'utf8')
+    const migrated = parseDocument(text)
+    expect(migrated.schemaVersion).toBe(2)
+    expect(migrated.fluidVolumes).toEqual([])
   })
 })

@@ -4,7 +4,7 @@ import type { BodyType, MassMode, PhysicsShape } from '../physics/ports.ts'
 
 export type { BodyType, MassMode } from '../physics/ports.ts'
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export type GravityPreset = 'earth' | 'moon' | 'mars' | 'zero' | 'custom'
 
@@ -41,12 +41,26 @@ export type SceneBody = {
   color?: number
 }
 
+/** Analytic hydrostatic tank (Archimedes + drag). Flat free surface; does not spill. */
 export type SceneFluidRegion = {
   id: FluidRegionId
   name: string
   polygon: Vec2[]
   restSurfaceY: number
   materialId: MaterialId
+}
+
+/**
+ * Seed volume for particle (PBF) fluid. Particles are regenerated on reset/reload from
+ * this polygon; runtime particle state is not persisted in the document.
+ */
+export type SceneFluidVolume = {
+  id: FluidRegionId
+  name: string
+  polygon: Vec2[]
+  materialId: MaterialId
+  /** Particle spacing in meters. Smaller → more particles (capped by the solver). */
+  spacing: number
 }
 
 export const JointKindUi = {
@@ -112,6 +126,7 @@ export type SceneDocument = {
   bodies: SceneBody[]
   joints: SceneJoint[]
   fluidRegions: SceneFluidRegion[]
+  fluidVolumes: SceneFluidVolume[]
   camera: CameraState
   visualization: VizLayers
 }
@@ -163,6 +178,7 @@ export function emptyScene(name = 'Escena vacía'): SceneDocument {
     ],
     joints: [],
     fluidRegions: [],
+    fluidVolumes: [],
     camera: { x: 0, y: 2.5, pixelsPerMeter: 64 },
     visualization: { ...DEFAULT_VIZ },
   }

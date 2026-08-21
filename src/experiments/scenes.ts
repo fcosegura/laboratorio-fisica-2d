@@ -422,6 +422,261 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
       return doc
     },
   },
+  {
+    id: 'spill-cup',
+    title: 'Vaso que se derrama',
+    build: () => {
+      const doc = base(
+        'Vaso que se derrama',
+        'Fluido de partículas (PBF): el agua se contiene entre sólidos y puede derramarse. ' +
+          'Play: el vaso ya va inclinándose. Usa Fuerza para empujar más.',
+      )
+      const cupX = 0
+      const cupY = 1.4
+      const cupAngle = (-25 * Math.PI) / 180
+      const wall = (id: string, name: string, lx: number, ly: number, hx: number, hy: number) => {
+        const c = Math.cos(cupAngle)
+        const s = Math.sin(cupAngle)
+        return box(id, name, cupX + lx * c - ly * s, cupY + lx * s + ly * c, hx, hy, 'stone', {
+          type: 'dynamic',
+          angle: cupAngle,
+          omega: -0.8,
+          density: 1200,
+          friction: 0.5,
+          restitution: 0.05,
+        })
+      }
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 8, 0.25, 'stone', { type: 'fixed' }),
+        box('body:table', 'Mesa', 0, 0.4, 2.2, 0.12, 'wood', { type: 'fixed' }),
+        wall('body:cup-bottom', 'Fondo vaso', 0, 0, 0.55, 0.08),
+        wall('body:cup-left', 'Pared izq.', -0.5, 0.45, 0.08, 0.5),
+        wall('body:cup-right', 'Pared der.', 0.5, 0.45, 0.08, 0.5),
+        ball('body:cork', 'Corcho', 1.8, 2.2, 0.18, 'wood', {
+          density: 400,
+          vx: -1.5,
+          vy: 0.5,
+        }),
+      ]
+      doc.joints = [
+        {
+          id: 'joint:cup-l',
+          kind: 'fixed',
+          bodyA: 'body:cup-bottom',
+          bodyB: 'body:cup-left',
+          anchorA: { x: -0.5, y: 0.08 },
+          anchorB: { x: 0, y: -0.5 },
+          frameA: 0,
+          frameB: 0,
+        },
+        {
+          id: 'joint:cup-r',
+          kind: 'fixed',
+          bodyA: 'body:cup-bottom',
+          bodyB: 'body:cup-right',
+          anchorA: { x: 0.5, y: 0.08 },
+          anchorB: { x: 0, y: -0.5 },
+          frameA: 0,
+          frameB: 0,
+        },
+      ]
+      // Seed water inside the cup (local AABB transformed roughly to world).
+      const c = Math.cos(cupAngle)
+      const s = Math.sin(cupAngle)
+      const corners = [
+        { x: -0.35, y: 0.15 },
+        { x: 0.35, y: 0.15 },
+        { x: 0.35, y: 0.75 },
+        { x: -0.35, y: 0.75 },
+      ].map((p) => ({
+        x: cupX + p.x * c - p.y * s,
+        y: cupY + p.x * s + p.y * c,
+      }))
+      doc.fluidVolumes = [
+        {
+          id: 'fluid:cup',
+          name: 'Agua del vaso',
+          polygon: corners,
+          materialId: 'water',
+          spacing: 0.1,
+        },
+      ]
+      doc.camera = { x: 0, y: 1.6, pixelsPerMeter: 70 }
+      doc.visualization.fluidParticles = true
+      doc.visualization.contacts = true
+      return doc
+    },
+  },
+  {
+    id: 'particle-tank',
+    title: 'Contención en vaso',
+    build: () => {
+      const doc = base(
+        'Contención en vaso',
+        'Fluido libre en un vaso fijo en U. El agua debe quedarse dentro sin atravesar las paredes. ' +
+          'Puedes echar más fluido (E) o empujar con Fuerza.',
+      )
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 6, 0.25, 'stone', { type: 'fixed' }),
+        box('body:cup-bottom', 'Fondo', 0, 0.15, 0.7, 0.1, 'stone', { type: 'fixed' }),
+        box('body:cup-left', 'Pared izq.', -0.7, 0.85, 0.1, 0.7, 'stone', { type: 'fixed' }),
+        box('body:cup-right', 'Pared der.', 0.7, 0.85, 0.1, 0.7, 'stone', { type: 'fixed' }),
+      ]
+      doc.fluidVolumes = [
+        {
+          id: 'fluid:cup',
+          name: 'Agua',
+          polygon: [
+            { x: -0.55, y: 0.3 },
+            { x: 0.55, y: 0.3 },
+            { x: 0.55, y: 1.2 },
+            { x: -0.55, y: 1.2 },
+          ],
+          materialId: 'water',
+          spacing: 0.09,
+        },
+      ]
+      doc.camera = { x: 0, y: 1.0, pixelsPerMeter: 90 }
+      doc.visualization.fluidParticles = true
+      return doc
+    },
+  },
+  {
+    id: 'wood-splash',
+    title: 'Madera al agua',
+    build: () => {
+      const doc = base(
+        'Madera al agua',
+        'Bloque de madera (ρ≈600) cae desde 3 m sobre una piscina de fluido libre. ' +
+          'Debe amortiguar el impacto y flotar. Compara con el tanque analítico (W).',
+      )
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 7, 0.25, 'stone', { type: 'fixed' }),
+        box('body:left', 'Pared izq.', -2.2, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
+        box('body:right', 'Pared der.', 2.2, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
+        box('body:wood', 'Madera', 0, 2.6, 0.4, 0.22, 'wood', {
+          density: 600,
+          linearDamping: 0.15,
+          angularDamping: 0.2,
+          restitution: 0.1,
+          lockRotation: true,
+        }),
+      ]
+      doc.fluidVolumes = [
+        {
+          id: 'fluid:pool',
+          name: 'Piscina',
+          polygon: [
+            { x: -2.0, y: 0.05 },
+            { x: 2.0, y: 0.05 },
+            { x: 2.0, y: 1.6 },
+            { x: -2.0, y: 1.6 },
+          ],
+          materialId: 'water',
+          spacing: 0.1,
+        },
+      ]
+      doc.camera = { x: 0, y: 1.8, pixelsPerMeter: 55 }
+      doc.visualization.fluidParticles = true
+      doc.visualization.velocity = true
+      return doc
+    },
+  },
+  {
+    id: 'stone-sinks',
+    title: 'Piedra que se hunde',
+    build: () => {
+      const doc = base(
+        'Piedra que se hunde',
+        'Piedra (ρ≈2600) cae en el mismo tipo de piscina. Debe hundirse hasta el fondo ' +
+          'mientras la madera flotaría. Arrastre del fluido amortigua la caída.',
+      )
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 7, 0.25, 'stone', { type: 'fixed' }),
+        box('body:left', 'Pared izq.', -2.2, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
+        box('body:right', 'Pared der.', 2.2, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
+        box('body:rock', 'Piedra', 0, 3.0, 0.28, 0.28, 'stone', {
+          density: 2600,
+          linearDamping: 0.05,
+          restitution: 0.05,
+          lockRotation: true,
+        }),
+      ]
+      doc.fluidVolumes = [
+        {
+          id: 'fluid:pool',
+          name: 'Piscina',
+          polygon: [
+            { x: -2.0, y: 0.05 },
+            { x: 2.0, y: 0.05 },
+            { x: 2.0, y: 1.6 },
+            { x: -2.0, y: 1.6 },
+          ],
+          materialId: 'water',
+          spacing: 0.1,
+        },
+      ]
+      doc.camera = { x: 0, y: 1.6, pixelsPerMeter: 55 }
+      doc.visualization.fluidParticles = true
+      return doc
+    },
+  },
+  {
+    id: 'dual-drop',
+    title: 'Flota vs hunde',
+    build: () => {
+      const doc = base(
+        'Flota vs hunde',
+        'Madera (izq.) y piedra (der.) caen a la vez en fluido libre. Compara trayectorias.',
+      )
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 8, 0.25, 'stone', { type: 'fixed' }),
+        box('body:left', 'Pared izq.', -3.0, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
+        box('body:mid', 'Separador', 0, 0.7, 0.08, 0.8, 'stone', { type: 'fixed' }),
+        box('body:right', 'Pared der.', 3.0, 1.1, 0.12, 1.2, 'stone', { type: 'fixed' }),
+        box('body:wood', 'Madera', -1.4, 3.0, 0.35, 0.2, 'wood', {
+          density: 600,
+          lockRotation: true,
+          linearDamping: 0.1,
+        }),
+        box('body:rock', 'Piedra', 1.4, 3.0, 0.28, 0.28, 'stone', {
+          density: 2600,
+          lockRotation: true,
+          linearDamping: 0.05,
+        }),
+      ]
+      doc.fluidVolumes = [
+        {
+          id: 'fluid:left',
+          name: 'Piscina izq.',
+          polygon: [
+            { x: -2.8, y: 0.05 },
+            { x: -0.15, y: 0.05 },
+            { x: -0.15, y: 1.5 },
+            { x: -2.8, y: 1.5 },
+          ],
+          materialId: 'water',
+          spacing: 0.11,
+        },
+        {
+          id: 'fluid:right',
+          name: 'Piscina der.',
+          polygon: [
+            { x: 0.15, y: 0.05 },
+            { x: 2.8, y: 0.05 },
+            { x: 2.8, y: 1.5 },
+            { x: 0.15, y: 1.5 },
+          ],
+          materialId: 'water',
+          spacing: 0.11,
+        },
+      ]
+      doc.camera = { x: 0, y: 1.6, pixelsPerMeter: 48 }
+      doc.visualization.fluidParticles = true
+      doc.visualization.velocity = true
+      return doc
+    },
+  },
 ]
 
 export function experimentById(id: string): SceneDocument | null {

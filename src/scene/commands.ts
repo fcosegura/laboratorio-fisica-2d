@@ -3,6 +3,7 @@ import type {
   SceneBody,
   SceneDocument,
   SceneFluidRegion,
+  SceneFluidVolume,
   SceneJoint,
 } from './document.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
@@ -133,6 +134,43 @@ export class RemoveFluidCommand implements Command {
           ? this.index
           : doc.fluidRegions.length
       doc.fluidRegions.splice(insertAt, 0, structuredClone(this.stored))
+    }
+  }
+}
+
+export class AddFluidVolumeCommand implements Command {
+  volume: SceneFluidVolume
+  constructor(volume: SceneFluidVolume) {
+    this.volume = volume
+  }
+  apply(doc: SceneDocument): void {
+    doc.fluidVolumes.push(structuredClone(this.volume))
+  }
+  invert(doc: SceneDocument): void {
+    doc.fluidVolumes = doc.fluidVolumes.filter((v) => v.id !== this.volume.id)
+  }
+}
+
+export class RemoveFluidVolumeCommand implements Command {
+  id: string
+  stored: SceneFluidVolume | null = null
+  index = -1
+  constructor(id: string) {
+    this.id = id
+  }
+  apply(doc: SceneDocument): void {
+    const i = doc.fluidVolumes.findIndex((v) => v.id === this.id)
+    this.index = i
+    this.stored = i >= 0 ? structuredClone(doc.fluidVolumes[i]!) : null
+    if (i >= 0) doc.fluidVolumes.splice(i, 1)
+  }
+  invert(doc: SceneDocument): void {
+    if (this.stored && !doc.fluidVolumes.some((v) => v.id === this.stored!.id)) {
+      const insertAt =
+        this.index >= 0 && this.index <= doc.fluidVolumes.length
+          ? this.index
+          : doc.fluidVolumes.length
+      doc.fluidVolumes.splice(insertAt, 0, structuredClone(this.stored))
     }
   }
 }

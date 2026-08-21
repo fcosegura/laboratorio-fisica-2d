@@ -119,6 +119,7 @@ function ToolIcon({ id }: { id: Tool }) {
     polygon: '⬠',
     line: '━',
     fluid: '💧',
+    spill: '🌊',
     force: '↗',
     measure: '📏',
     joint: '⚭',

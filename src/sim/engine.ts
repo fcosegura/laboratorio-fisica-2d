@@ -8,6 +8,7 @@ import { buildWorld } from '../scene/builder.ts'
 import { cloneDocument, type SceneBody, type SceneDocument } from '../scene/document.ts'
 import { pickBody } from '../scene/picking.ts'
 import { AnalyticFluidSolver } from '../fluids/analytic/AnalyticFluid.ts'
+import { PbfFluidSolver } from '../fluids/pbf/PbfFluid.ts'
 import { Clock } from './clock.ts'
 import { DataRecorder } from './recorder.ts'
 
@@ -25,6 +26,7 @@ export class SimulationEngine {
   readonly clock = new Clock()
   readonly recorder = new DataRecorder()
   readonly fluids = new AnalyticFluidSolver()
+  readonly particles = new PbfFluidSolver()
   prev: BodySnapshot[] = []
   curr: BodySnapshot[] = []
   private prevMap = new Map<BodyId, BodySnapshot>()
@@ -68,6 +70,7 @@ export class SimulationEngine {
     for (const b of this.prev) this.prevMap.set(b.id, b)
     this.contacts = []
     this.appliedForces.length = 0
+    this.particles.rebuild(this.doc.fluidVolumes, this.world)
   }
 
   private syncCurrMap(): void {
@@ -129,6 +132,7 @@ export class SimulationEngine {
     }
     const t0 = performance.now()
     this.fluids.step(this.world, this.doc.fluidRegions, this.doc.bodies, this.curr)
+    this.particles.step(this.world, PHYSICS_DT)
     const t1 = performance.now()
     this.world.step(PHYSICS_DT)
     const t2 = performance.now()

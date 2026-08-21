@@ -123,7 +123,7 @@ export function reduceDown(
     }
   }
 
-  if (tool === 'circle' || tool === 'rect' || tool === 'line' || tool === 'fluid') {
+  if (tool === 'circle' || tool === 'rect' || tool === 'line' || tool === 'fluid' || tool === 'spill') {
     return {
       state: { kind: 'creating', tool, start: world, current: world },
     }

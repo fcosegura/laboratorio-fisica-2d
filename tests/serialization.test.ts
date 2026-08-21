@@ -39,7 +39,8 @@ describe('serialization', () => {
     const { join } = await import('node:path')
     const text = readFileSync(join(import.meta.dirname, 'fixtures', 'scene-v1.json'), 'utf8')
     const doc = parseDocument(text)
-    expect(doc.schemaVersion).toBe(1)
+    expect(doc.schemaVersion).toBe(2)
+    expect(doc.fluidVolumes).toEqual([])
     expect(doc.meta.name).toBe('Fixture v1')
   })
 

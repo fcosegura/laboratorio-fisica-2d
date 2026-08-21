@@ -8,6 +8,7 @@ export const Tool = {
   force: 'force',
   measure: 'measure',
   fluid: 'fluid',
+  spill: 'spill',
   joint: 'joint',
 } as const
 export type Tool = (typeof Tool)[keyof typeof Tool]
@@ -24,7 +25,8 @@ export const TOOL_META: {
   { id: 'rect', label: 'Rectángulo', hint: 'R', group: 'create' },
   { id: 'polygon', label: 'Polígono', hint: 'G', group: 'create' },
   { id: 'line', label: 'Plataforma', hint: 'L', group: 'create' },
-  { id: 'fluid', label: 'Fluido', hint: 'W · empuje 2D, superficie plana', group: 'create' },
+  { id: 'fluid', label: 'Tanque', hint: 'W · Arquímedes, superficie plana', group: 'create' },
+  { id: 'spill', label: 'Fluido libre', hint: 'E · partículas, se derrama', group: 'create' },
   { id: 'force', label: 'Fuerza', hint: 'F · arrastra; Mayús sostiene', group: 'phys' },
   { id: 'measure', label: 'Medir', hint: 'M', group: 'phys' },
   { id: 'joint', label: 'Unir', hint: 'J · arrastra de un cuerpo a otro', group: 'phys' },

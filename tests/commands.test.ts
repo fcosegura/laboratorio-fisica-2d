@@ -11,6 +11,7 @@ import {
   BatchCommand,
   RemoveBodyCommand,
   RemoveFluidCommand,
+  RemoveFluidVolumeCommand,
   SetWorldCommand,
   UpdateBodyCommand,
 } from '../src/scene/commands.ts'
@@ -104,6 +105,33 @@ describe('scene commands & index preservation', () => {
 
     history.undo()
     expect(doc.fluidRegions.map((f) => f.id)).toEqual(['f1', 'f2', 'f3'])
+  })
+
+  it('restores fluid volume index on undo', () => {
+    let doc: SceneDocument = emptyScene()
+    const history = new History(
+      () => doc,
+      (d) => {
+        doc = d
+      },
+    )
+    const mk = (id: string) => ({
+      id,
+      name: id,
+      polygon: [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 1, y: 1 },
+        { x: 0, y: 1 },
+      ],
+      materialId: 'water' as const,
+      spacing: 0.12,
+    })
+    doc.fluidVolumes.push(mk('v1'), mk('v2'), mk('v3'))
+    history.apply(new RemoveFluidVolumeCommand('v2'))
+    expect(doc.fluidVolumes.map((f) => f.id)).toEqual(['v1', 'v3'])
+    history.undo()
+    expect(doc.fluidVolumes.map((f) => f.id)).toEqual(['v1', 'v2', 'v3'])
   })
 
   it('UpdateBodyCommand with explicit previous state restores recorded state', () => {

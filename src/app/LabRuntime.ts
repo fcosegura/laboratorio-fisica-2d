@@ -15,11 +15,13 @@ import { PixiRenderer } from '../render/PixiRenderer.ts'
 import {
   AddBodyCommand,
   AddFluidCommand,
+  AddFluidVolumeCommand,
   AddJointCommand,
   BatchCommand,
   DuplicateBodyCommand,
   RemoveBodyCommand,
   RemoveFluidCommand,
+  RemoveFluidVolumeCommand,
   RemoveJointCommand,
   SetWorldCommand,
   UpdateBodyCommand,
@@ -519,6 +521,31 @@ export class LabRuntime {
           materialId: 'water',
         }),
       )
+    } else if (tool === 'spill') {
+      const minX = Math.min(a.x, b.x)
+      const maxX = Math.max(a.x, b.x)
+      const minY = Math.min(a.y, b.y)
+      const maxY = Math.max(a.y, b.y)
+      if (maxX - minX < 0.2 || maxY - minY < 0.2) return
+      this.history.apply(
+        new AddFluidVolumeCommand({
+          id: this.ids.next('fluid'),
+          name: 'Fluido libre',
+          polygon: [
+            { x: minX, y: minY },
+            { x: maxX, y: minY },
+            { x: maxX, y: maxY },
+            { x: minX, y: maxY },
+          ],
+          materialId: 'water',
+          spacing: 0.1,
+        }),
+      )
+      this.engine.doc.visualization.fluidParticles = true
+      // Append only the new volume — do not reseeds existing pools (that looked like an explosion).
+      const created = this.engine.doc.fluidVolumes[this.engine.doc.fluidVolumes.length - 1]
+      if (created) this.engine.particles.addVolume(created, this.engine.world)
+      this.pushUi()
     }
   }
 
@@ -684,9 +711,14 @@ export class LabRuntime {
 
   removeFluids(): void {
     const regions = this.engine.doc.fluidRegions
-    if (!regions.length) return
-    const commands = regions.map((r) => new RemoveFluidCommand(r.id))
+    const volumes = this.engine.doc.fluidVolumes
+    if (!regions.length && !volumes.length) return
+    const commands = [
+      ...regions.map((r) => new RemoveFluidCommand(r.id)),
+      ...volumes.map((v) => new RemoveFluidVolumeCommand(v.id)),
+    ]
     this.history.apply(commands.length === 1 ? commands[0]! : new BatchCommand(commands))
+    this.engine.particles.retainVolumes(new Set(this.engine.doc.fluidVolumes.map((v) => v.id)))
     this.pushUi()
   }
 
@@ -793,6 +825,7 @@ export class LabRuntime {
       ...doc.bodies.map((b) => b.id),
       ...doc.joints.map((j) => j.id),
       ...doc.fluidRegions.map((f) => f.id),
+      ...doc.fluidVolumes.map((f) => f.id),
     ]
     this.ids.seedMax(allIds)
     this.store?.setState({ viz: { ...doc.visualization } })
@@ -856,6 +889,7 @@ export class LabRuntime {
       f: ToolId.force,
       m: ToolId.measure,
       w: ToolId.fluid,
+      e: ToolId.spill,
       j: ToolId.joint,
     }
     const t = map[e.key.toLowerCase()]
@@ -914,8 +948,8 @@ export class LabRuntime {
           }
         : null,
       bodyCount: this.engine.doc.bodies.length,
-      fluidCount: this.engine.doc.fluidRegions.length,
-      particleCount: 0,
+      fluidCount: this.engine.doc.fluidRegions.length + this.engine.doc.fluidVolumes.length,
+      particleCount: this.engine.particles.particleCount,
       gravityPreset: this.engine.doc.world.gravityPreset,
       timings: {
         physics: this.engine.timings.physics,

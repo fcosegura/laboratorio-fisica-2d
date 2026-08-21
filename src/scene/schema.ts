@@ -87,6 +87,15 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         materialId: z.string(),
       }),
     ),
+    fluidVolumes: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        polygon: z.array(vec2).min(3),
+        materialId: z.string(),
+        spacing: num.positive().max(1),
+      }),
+    ),
     camera: z.object({
       x: num,
       y: num,
@@ -196,12 +205,44 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         })
       }
     }
+
+    for (let i = 0; i < doc.fluidVolumes.length; i++) {
+      const v = doc.fluidVolumes[i]!
+      if (fluidIds.has(v.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `ID de fluido duplicado: ${v.id}`,
+          path: ['fluidVolumes', i, 'id'],
+        })
+      }
+      fluidIds.add(v.id)
+
+      if (!isConvex(v.polygon)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `El polígono del volumen de fluido '${v.name}' debe ser convexo`,
+          path: ['fluidVolumes', i, 'polygon'],
+        })
+      }
+
+      if (!FLUID_MATERIALS.some((m) => m.id === v.materialId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Material de fluido desconocido '${v.materialId}' en volumen '${v.name}'`,
+          path: ['fluidVolumes', i, 'materialId'],
+        })
+      }
+    }
   })
 
 export type Migration = (doc: Record<string, unknown>) => Record<string, unknown>
 
 export const MIGRATIONS: Record<number, Migration> = {
-  // 1 is current. Future: 1 -> 2 lives here as MIGRATIONS[1]
+  1: (doc) => {
+    if (!Array.isArray(doc.fluidVolumes)) doc.fluidVolumes = []
+    doc.schemaVersion = 2
+    return doc
+  },
 }
 
 export function migrateDocument(raw: unknown): SceneDocument {
