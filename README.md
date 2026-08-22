@@ -17,7 +17,8 @@ No es una demo. Es un laboratorio para crear escenas, cambiar propiedades y ver 
 - Gráficas de posición, velocidad y energía
 - Guardar / cargar JSON versionado
 - Experimentos: caída libre, tiro parabólico, colisiones, plano inclinado, péndulo, flotación
-- Flotación por **regiones analíticas** (Arquímedes + arrastre), no partículas decorativas
+- Flotación pedagógica por **regiones analíticas** (Arquímedes + arrastre)
+- Fluido libre (**SPH Clavet**, no PBF): se derrama, forma charcos; la flotación en el charco es Arquímedes recortado contra la superficie libre local
 
 ## Cómo ejecutarlo
 
@@ -38,7 +39,7 @@ npm run build
 | --- | --- |
 | Reproducir / pausar | Espacio o barra superior |
 | Paso a paso | `.` |
-| Herramientas | V seleccionar, H mano, C círculo, R rectángulo, G polígono, L plataforma, W líquido, F fuerza, M medir, J unir |
+| Herramientas | V seleccionar, H mano, C círculo, R rectángulo, G polígono, L plataforma, W tanque, E fluido libre, F fuerza, M medir, J unir |
 | Unir | arrastra de un cuerpo a otro; el tipo (soldar, bisagra, resorte, cuerda) se elige en la barra |
 | Zoom | rueda o pellizco |
 | Pan | botón medio, derecho, o herramienta Mano |
@@ -51,7 +52,7 @@ Las unidades del mundo son **metros**. El eje Y apunta hacia arriba.
 
 La UI (React) no calcula física. El bucle vive en `LabRuntime`:
 
-`SceneDocument` (autoría) → `SimulationEngine` → Rapier + fluido analítico → snapshot → PixiJS.
+`SceneDocument` (autoría) → `SimulationEngine` → Rapier + fluido analítico / SPH Clavet → snapshot → PixiJS.
 
 Reglas de dependencia comprobadas en `tests/architecture.test.ts`.
 

@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Arquitectura
 
-Pipeline: `SceneDocument` → `History`/`Command` → `SimulationEngine` → Rapier + fluido analítico → snapshot → PixiJS.
+Pipeline: `SceneDocument` → `History`/`Command` → `SimulationEngine` → Rapier + fluido analítico / SPH Clavet → snapshot → PixiJS.
 
 React (`src/ui`) no calcula física. Rapier solo en `src/physics/adapters/rapier/`. El store Zustand es UI, no dueño del documento.
 

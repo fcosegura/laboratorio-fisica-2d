@@ -41,6 +41,16 @@ function bodyColor(body: SceneBody): number {
   return body.color ?? getSolid(body.materialId).color
 }
 
+function lightenColor(color: number, t: number): number {
+  const r = (color >> 16) & 255
+  const g = (color >> 8) & 255
+  const b = color & 255
+  const lr = Math.round(r + (255 - r) * t)
+  const lg = Math.round(g + (255 - g) * t)
+  const lb = Math.round(b + (255 - b) * t)
+  return (lr << 16) | (lg << 8) | lb
+}
+
 function drawShape(g: Graphics, body: SceneBody, color: number, alpha = 1): void {
   const s = body.shape
   g.clear()
@@ -251,9 +261,16 @@ export class PixiRenderer {
       })
     }
 
-    // Particle (PBF) fluids.
+    // SPH Clavet particles. Draw radius is larger than collision so discs overlap
+    // into a puddle; concentric falloff avoids a gravel look.
+    const drawR = engine.particles.particleDrawRadius
     for (const p of engine.particles.particles) {
-      g.circle(p.x, p.y, 0.055).fill({ color: p.color, alpha: Math.min(0.85, p.opacity + 0.2) })
+      const foam = p.density < 0.75 || Math.hypot(p.vx, p.vy) > 1.2
+      const color = foam ? lightenColor(p.color, 0.4) : p.color
+      const alpha = foam ? Math.min(0.5, p.opacity + 0.05) : Math.min(0.85, p.opacity + 0.2)
+      g.circle(p.x, p.y, drawR).fill({ color, alpha: alpha * 0.28 })
+      g.circle(p.x, p.y, drawR * 0.62).fill({ color, alpha: alpha * 0.5 })
+      g.circle(p.x, p.y, drawR * 0.32).fill({ color, alpha })
     }
 
     // Seed outlines when volumes exist but particles have not been built yet.
@@ -464,7 +481,11 @@ export class PixiRenderer {
       if (interaction.tool === 'circle') {
         const r = Math.max(0.05, Math.hypot(b.x - a.x, b.y - a.y))
         g.circle(a.x, a.y, r).stroke()
-      } else if (interaction.tool === 'rect' || interaction.tool === 'fluid' || interaction.tool === 'spill') {
+      } else if (
+        interaction.tool === 'rect' ||
+        interaction.tool === 'fluid' ||
+        interaction.tool === 'spill'
+      ) {
         const minX = Math.min(a.x, b.x)
         const minY = Math.min(a.y, b.y)
         const w = Math.abs(b.x - a.x)

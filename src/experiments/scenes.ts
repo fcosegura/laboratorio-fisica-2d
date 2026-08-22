@@ -407,7 +407,7 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     build: () => {
       const doc = base(
         'Vaso que se derrama',
-        'Fluido de partículas (PBF): el agua se contiene entre sólidos y puede derramarse. ' +
+        'Fluido de partículas (SPH Clavet): el agua se contiene entre sólidos y puede derramarse. ' +
           'Play: el vaso ya va inclinándose. Usa Fuerza para empujar más.',
       )
       const cupX = 0
@@ -491,7 +491,7 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     build: () => {
       const doc = base(
         'Contención en vaso',
-        'Fluido libre en un vaso fijo en U. El agua debe quedarse dentro sin atravesar las paredes. ' +
+        'Fluido libre (SPH Clavet) en un vaso fijo en U. El agua debe quedarse dentro sin atravesar las paredes. ' +
           'Puedes echar más fluido (E) o empujar con Fuerza.',
       )
       doc.bodies = [

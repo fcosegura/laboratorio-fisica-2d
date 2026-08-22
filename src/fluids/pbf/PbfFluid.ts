@@ -1,9 +1,20 @@
 import type { Vec2 } from '../../core/math/vec2.ts'
-import { pointInPolygon } from '../../core/math/polygon.ts'
-import type { SceneFluidVolume } from '../../scene/document.ts'
+import {
+  clipHalfPlane,
+  pointInPolygon,
+  polygonArea,
+  polygonCentroid,
+} from '../../core/math/polygon.ts'
+import type { SceneBody, SceneFluidVolume } from '../../scene/document.ts'
 import { getFluid } from '../../materials/catalog.ts'
 import type { BodyId } from '../../core/ids.ts'
-import type { ColliderDesc, PhysicsShape, PhysicsWorld } from '../../physics/ports.ts'
+import type { ColliderDesc, PhysicsWorld } from '../../physics/ports.ts'
+import { fluidDragForce, fluidTorqueDamp } from '../analytic/AnalyticFluid.ts'
+import { shapeToWorldPolygons } from '../bodyPolygon.ts'
+import { collideSolidCached, cacheSolids, pushOutOfShape } from './collide.ts'
+import { estimateFreeSurfaceD } from './freeSurface.ts'
+import { CountingSortGrid, buildCountingSort } from './hash.ts'
+import { clavetRestDensity, xsphEpsilon } from './kernels.ts'
 
 /** Snapshot particle for render / HUD (plain data, no solver internals). */
 export type FluidParticle = {
@@ -14,23 +25,38 @@ export type FluidParticle = {
   volumeId: string
   color: number
   opacity: number
+  /** SPH density ρ_i / ρ0 (1 ≈ rest). */
+  density: number
 }
 
 export const PBF_DEFAULT_SPACING = 0.1
 export const PBF_MAX_PARTICLES = 2200
 
-const SOLVER_ITERS = 2
-const OVERLAP_PASSES = 2
+const SPH_SUBSTEPS = 2
+const SPH_H_FACTOR = 2.2
+const SPH_COLLISION_RADIUS = 0.5
+const SPH_DRAW_RADIUS = 0.65
+const SPH_K = 10
+const SPH_K_NEAR = 5
 const CULL_Y = -40
+/** Splash/impact coupling only — hydrostatic lift comes from Archimedes, not this. */
 const COUPLING = 0.1
 const V_MAX = 8
+/** Numerical dust only — XSPH is the physical damper. */
+const V_REST = 0.008
 /** Cap total impulse applied to one dynamic body per step (avoids explosions). */
 const MAX_BODY_IMPULSE = 1.8
-/** Max center-distance correction per overlap pair (keeps confined piles stable). */
-const MAX_PAIR_PUSH = 0.22
 /** Max solid push absorbed without becoming fake velocity (stops wall jets). */
 const MAX_SOLID_CORR = 0.08
-const VISC_BLEND = 0.12
+/** Below this, a floating body uses Archimedes only (no particle kicks, no Rapier wake). */
+const BODY_REST_SPEED = 0.09
+const BODY_REST_OMEGA = 0.12
+/** Full splash coupling above this speed; quadratic fade in between. */
+const BODY_IMPACT_SPEED = 0.35
+const MIN_COUPLE_IMPULSE = 2e-4
+/** EMA of the local free surface (low = smoother rest, high = faster splash). */
+const SURFACE_BLEND = 0.1
+const FORCE_BLEND = 0.12
 
 type Seed = {
   x: number
@@ -43,9 +69,14 @@ type Seed = {
 }
 
 /**
- * Soft-sphere particle fluid: unilateral overlap (push apart only) + viscosity.
- * Particles can separate freely so gravity collapses blobs into pools that spread
- * inside containers. Named under the PBF path from the feasibility plan.
+ * SPH Clavet (2D CPU, double-density), not PBF. Two internal substeps of dt/2.
+ * Facade kept under the PBF path from the plan.
+ *
+ * Two-way coupling is hybrid on purpose:
+ * - Particle→body impulses: splash / impact. Faded to zero when the rigid is slow.
+ * - Hydrostatic lift: clip each collider against a local free-surface plane
+ *   (same Archimedes as the analytic tank). No exterior shell.
+ * SPH pressure is never applied as a force on rigid bodies.
  */
 export class PbfFluidSolver {
   readonly particles: FluidParticle[] = []
@@ -61,13 +92,31 @@ export class PbfFluidSolver {
   private opacity: number[] = []
   private density: Float64Array = new Float64Array(0)
   private viscosity: Float64Array = new Float64Array(0)
+  private rho: Float64Array = new Float64Array(0)
+  private rhoNear: Float64Array = new Float64Array(0)
+  private press: Float64Array = new Float64Array(0)
+  private pressNear: Float64Array = new Float64Array(0)
+  private sphDensity: Float64Array = new Float64Array(0)
   private n = 0
   private cap = 0
-  /** Minimum center distance when overlapping — smaller than seed spacing so gravity can pack. */
-  private diameter = PBF_DEFAULT_SPACING * 0.52
-  private radius = PBF_DEFAULT_SPACING * 0.32
-  /** Area represented by one particle (spacing²) for Archimedes. */
-  private particleArea = PBF_DEFAULT_SPACING * PBF_DEFAULT_SPACING
+  private radius = PBF_DEFAULT_SPACING * SPH_COLLISION_RADIUS
+  /** Seed spacing of the last volume (column width for the free-surface estimate). */
+  private spacing = PBF_DEFAULT_SPACING
+  private h = PBF_DEFAULT_SPACING * SPH_H_FACTOR
+  private rho0 = clavetRestDensity(PBF_DEFAULT_SPACING, PBF_DEFAULT_SPACING * SPH_H_FACTOR)
+  private readonly hash = new CountingSortGrid()
+  /** Collision radius of a particle. */
+  get particleRadius(): number {
+    return this.radius
+  }
+
+  get particleSpacing(): number {
+    return this.spacing
+  }
+
+  get particleDrawRadius(): number {
+    return this.spacing * SPH_DRAW_RADIUS
+  }
 
   /** Last buoyancy samples (for tests / debug HUD). */
   readonly buoyancyDebug: {
@@ -78,6 +127,9 @@ export class PbfFluidSolver {
     fx: number
     fy: number
   }[] = []
+  /** Smoothed free-surface plane offset per dynamic body. */
+  private readonly surfaceD = new Map<string, number>()
+  private readonly forceMag = new Map<string, number>()
 
   get particleCount(): number {
     return this.n
@@ -90,6 +142,8 @@ export class PbfFluidSolver {
     this.color = []
     this.opacity = []
     this.buoyancyDebug.length = 0
+    this.surfaceD.clear()
+    this.forceMag.clear()
   }
 
   /** Full reseeds from authored volumes (reset / reload). */
@@ -106,9 +160,10 @@ export class PbfFluidSolver {
     const seeds = seedVolume(vol, this.n, world)
     if (!seeds.length) return 0
     const spacing = vol.spacing > 0 ? vol.spacing : PBF_DEFAULT_SPACING
-    this.diameter = spacing * 0.52
-    this.radius = spacing * 0.32
-    this.particleArea = spacing * spacing
+    this.spacing = spacing
+    this.radius = spacing * SPH_COLLISION_RADIUS
+    this.h = spacing * SPH_H_FACTOR
+    this.rho0 = clavetRestDensity(spacing, this.h)
     this.ensureCap(this.n + seeds.length)
     for (const s of seeds) {
       const i = this.n
@@ -123,6 +178,7 @@ export class PbfFluidSolver {
       this.opacity[i] = s.opacity
       this.density[i] = s.density
       this.viscosity[i] = s.viscosity
+      this.sphDensity[i] = 1
       this.n++
     }
     this.syncSnapshot()
@@ -144,6 +200,7 @@ export class PbfFluidSolver {
         this.opacity[w] = this.opacity[i]!
         this.density[w] = this.density[i]!
         this.viscosity[w] = this.viscosity[i]!
+        this.sphDensity[w] = this.sphDensity[i]!
       }
       w++
     }
@@ -151,273 +208,411 @@ export class PbfFluidSolver {
     this.syncSnapshot()
   }
 
-  step(world: PhysicsWorld, dt: number): void {
+  step(world: PhysicsWorld, dt: number, bodies: readonly SceneBody[] = []): void {
     if (this.n === 0) return
     const g = world.gravity
-    const diam = this.diameter
-    const diam2 = diam * diam
-    const cell = diam
-    const invCell = 1 / cell
+    const n = this.n
+    const h = this.h
+    const h2 = h * h
+    const rCol = this.radius
+    const rho0 = this.rho0
+    const k = SPH_K
+    const kNear = SPH_K_NEAR
+    const dtSub = dt / SPH_SUBSTEPS
+    const dtSub2 = dtSub * dtSub
+    const solids = cacheSolids(world, rCol)
     const bodyImpulse = new Map<BodyId, { x: number; y: number; jx: number; jy: number }>()
-    // Solid corrections must NOT become velocity — that created the horizontal jets.
-    const solidDx = new Float64Array(this.n)
-    const solidDy = new Float64Array(this.n)
+    const solidDx = new Float64Array(n)
+    const solidDy = new Float64Array(n)
+    const dvx = new Float64Array(n)
+    const dvy = new Float64Array(n)
+    const wsum = new Float64Array(n)
 
-    for (let i = 0; i < this.n; i++) {
-      this.vx[i]! += g.x * dt
-      this.vy[i]! += g.y * dt
-      this.vx[i]! *= 0.998
-      this.vy[i]! *= 0.998
-      let dx = this.vx[i]! * dt
-      let dy = this.vy[i]! * dt
-      // Clamp sideways more than fall — thin walls vs free-fall packing.
-      const maxH = diam * 0.45
-      const maxV = Math.max(diam * 0.9, 0.12)
-      if (Math.abs(dx) > maxH) dx = Math.sign(dx) * maxH
-      if (Math.abs(dy) > maxV) dy = Math.sign(dy) * maxV
-      this.vx[i] = dx / dt
-      this.vy[i] = dy / dt
-      this.px[i] = this.x[i]! + dx
-      this.py[i] = this.y[i]! + dy
-    }
+    for (let sub = 0; sub < SPH_SUBSTEPS; sub++) {
+      solidDx.fill(0)
+      solidDy.fill(0)
 
-    const key = (cx: number, cy: number) => ((cx * 73856093) ^ (cy * 19349663)) | 0
-
-    for (let iter = 0; iter < SOLVER_ITERS; iter++) {
-      const buckets = new Map<number, number[]>()
-      for (let i = 0; i < this.n; i++) {
-        const cx = Math.floor(this.px[i]! * invCell)
-        const cy = Math.floor(this.py[i]! * invCell)
-        const k = key(cx, cy)
-        let list = buckets.get(k)
-        if (!list) {
-          list = []
-          buckets.set(k, list)
-        }
-        list.push(i)
+      for (let i = 0; i < n; i++) {
+        this.vx[i]! += g.x * dtSub
+        this.vy[i]! += g.y * dtSub
+        this.px[i] = this.x[i]! + this.vx[i]! * dtSub
+        this.py[i] = this.y[i]! + this.vy[i]! * dtSub
       }
 
-      for (let pass = 0; pass < OVERLAP_PASSES; pass++) {
-        for (let i = 0; i < this.n; i++) {
-          const cx = Math.floor(this.px[i]! * invCell)
-          const cy = Math.floor(this.py[i]! * invCell)
-          for (let ox = -1; ox <= 1; ox++) {
-            for (let oy = -1; oy <= 1; oy++) {
-              const list = buckets.get(key(cx + ox, cy + oy))
-              if (!list) continue
-              for (const j of list) {
-                if (j <= i) continue
-                const dx = this.px[i]! - this.px[j]!
-                const dy = this.py[i]! - this.py[j]!
-                const d2 = dx * dx + dy * dy
-                if (d2 >= diam2 || d2 < 1e-14) continue
-                const d = Math.sqrt(d2)
-                let pen = (diam - d) * 0.35
-                if (pen > diam * MAX_PAIR_PUSH) pen = diam * MAX_PAIR_PUSH
-                const nx = dx / d
-                const ny = dy / d
-                this.px[i]! += nx * pen
-                this.py[i]! += ny * pen
-                this.px[j]! -= nx * pen
-                this.py[j]! -= ny * pen
-              }
-            }
+      for (let i = 0; i < n; i++) {
+        const bx = this.px[i]!
+        const by = this.py[i]!
+        collideSolidCached(this.px, this.py, i, rCol, solids, bodyImpulse, this.x[i]!, this.y[i]!)
+        solidDx[i]! += this.px[i]! - bx
+        solidDy[i]! += this.py[i]! - by
+      }
+
+      buildCountingSort(this.px, this.py, n, h, this.hash)
+
+      const rho = this.rho
+      const rhoNear = this.rhoNear
+      const press = this.press
+      const pressNear = this.pressNear
+      rho.fill(1, 0, n)
+      rhoNear.fill(1, 0, n)
+      for (let i = 0; i < n; i++) {
+        this.hash.queryNeighbors(i, (j) => {
+          if (j <= i) return
+          const dx = this.px[i]! - this.px[j]!
+          const dy = this.py[i]! - this.py[j]!
+          const d2 = dx * dx + dy * dy
+          if (d2 >= h2 || d2 < 1e-14) return
+          const r = Math.sqrt(d2)
+          const w = 1 - r / h
+          const w2 = w * w
+          rho[i]! += w2
+          rho[j]! += w2
+          const w3 = w2 * w
+          rhoNear[i]! += w3
+          rhoNear[j]! += w3
+        })
+      }
+
+      for (let i = 0; i < n; i++) {
+        press[i] = k * (rho[i]! - rho0)
+        pressNear[i] = kNear * rhoNear[i]!
+        this.sphDensity[i] = rho[i]! / rho0
+      }
+
+      for (let i = 0; i < n; i++) {
+        this.hash.queryNeighbors(i, (j) => {
+          if (j <= i) return
+          const dx = this.px[i]! - this.px[j]!
+          const dy = this.py[i]! - this.py[j]!
+          const d2 = dx * dx + dy * dy
+          if (d2 >= h2 || d2 < 1e-14) return
+          const r = Math.sqrt(d2)
+          const q = r / h
+          const w = 1 - q
+          const mag =
+            dtSub2 * ((press[i]! + press[j]!) * 0.5 + (pressNear[i]! + pressNear[j]!) * 0.5 * w) * w
+          const invR = 1 / r
+          const mx = mag * 0.5 * dx * invR
+          const my = mag * 0.5 * dy * invR
+          this.px[i]! += mx
+          this.py[i]! += my
+          this.px[j]! -= mx
+          this.py[j]! -= my
+        })
+      }
+
+      for (let i = 0; i < n; i++) {
+        const bx = this.px[i]!
+        const by = this.py[i]!
+        collideSolidCached(this.px, this.py, i, rCol, solids, bodyImpulse, this.x[i]!, this.y[i]!)
+        solidDx[i]! += this.px[i]! - bx
+        solidDy[i]! += this.py[i]! - by
+      }
+
+      for (let i = 0; i < n; i++) {
+        let sx = solidDx[i]!
+        let sy = solidDy[i]!
+        const sc = Math.hypot(sx, sy)
+        if (sc > MAX_SOLID_CORR) {
+          const s = MAX_SOLID_CORR / sc
+          sx *= s
+          sy *= s
+        }
+        this.vx[i] = (this.px[i]! - sx - this.x[i]!) / dtSub
+        this.vy[i] = (this.py[i]! - sy - this.y[i]!) / dtSub
+        if (sc > 1e-8) {
+          const nx = solidDx[i]! / sc
+          const ny = solidDy[i]! / sc
+          const vn = this.vx[i]! * nx + this.vy[i]! * ny
+          if (vn < 0) {
+            this.vx[i]! -= vn * nx
+            this.vy[i]! -= vn * ny
           }
+          const vt = this.vx[i]! * -ny + this.vy[i]! * nx
+          const vtf = vt * 0.92
+          this.vx[i] = this.vx[i]! - -ny * vt + -ny * vtf
+          this.vy[i] = this.vy[i]! - nx * vt + nx * vtf
         }
-        for (let i = 0; i < this.n; i++) {
-          const bx = this.px[i]!
-          const by = this.py[i]!
-          collideSolid(this.px, this.py, i, this.radius, world, bodyImpulse, this.x[i]!, this.y[i]!)
-          solidDx[i]! += this.px[i]! - bx
-          solidDy[i]! += this.py[i]! - by
+        this.x[i] = this.px[i]!
+        this.y[i] = this.py[i]!
+      }
+
+      // Implicit XSPH: v_i ← (v_i + Σ ε w v_j) / (1 + Σ ε w), applied after
+      // integrating v from positions. The plan's explicit v += ε Σ (Δv) w made
+      // honey (ε=0.45) explode; if this ran before v = (p − x) / dt it would be
+      // wiped. Denominator kept — do not go back to the un-normalized sum.
+      dvx.fill(0)
+      dvy.fill(0)
+      wsum.fill(0)
+      for (let i = 0; i < n; i++) {
+        const epsI = xsphEpsilon(this.viscosity[i]!)
+        this.hash.queryNeighbors(i, (j) => {
+          if (j <= i) return
+          const dx = this.x[i]! - this.x[j]!
+          const dy = this.y[i]! - this.y[j]!
+          const d2 = dx * dx + dy * dy
+          if (d2 >= h2 || d2 < 1e-14) return
+          const r = Math.sqrt(d2)
+          const w = 1 - r / h
+          const eps = 0.5 * (epsI + xsphEpsilon(this.viscosity[j]!))
+          const dvxP = eps * (this.vx[j]! - this.vx[i]!) * w
+          const dvyP = eps * (this.vy[j]! - this.vy[i]!) * w
+          dvx[i]! += dvxP
+          dvy[i]! += dvyP
+          dvx[j]! -= dvxP
+          dvy[j]! -= dvyP
+          wsum[i]! += eps * w
+          wsum[j]! += eps * w
+        })
+      }
+      for (let i = 0; i < n; i++) {
+        const denom = 1 + wsum[i]!
+        this.vx[i]! += dvx[i]! / denom
+        this.vy[i]! += dvy[i]! / denom
+        const sp = Math.hypot(this.vx[i]!, this.vy[i]!)
+        if (sp > V_MAX) {
+          const s = V_MAX / sp
+          this.vx[i]! *= s
+          this.vy[i]! *= s
+        }
+        if (Math.hypot(this.vx[i]!, this.vy[i]!) < V_REST) {
+          this.vx[i] = 0
+          this.vy[i] = 0
         }
       }
     }
 
-    for (let i = 0; i < this.n; i++) {
-      // Exclude wall push-out from velocity — otherwise sticks launch horizontal jets.
-      let sx = solidDx[i]!
-      let sy = solidDy[i]!
-      const sc = Math.hypot(sx, sy)
-      if (sc > MAX_SOLID_CORR) {
-        const s = MAX_SOLID_CORR / sc
-        sx *= s
-        sy *= s
-      }
-      this.vx[i] = (this.px[i]! - sx - this.x[i]!) / dt
-      this.vy[i] = (this.py[i]! - sy - this.y[i]!) / dt
-      // Friction against the contact: damp velocity along the solid normal.
-      if (sc > 1e-8) {
-        const nx = solidDx[i]! / sc
-        const ny = solidDy[i]! / sc
-        const vn = this.vx[i]! * nx + this.vy[i]! * ny
-        // Remove remaining inbound component; keep most of tangential with friction.
-        if (vn < 0) {
-          this.vx[i]! -= vn * nx
-          this.vy[i]! -= vn * ny
-        }
-        const vt = this.vx[i]! * -ny + this.vy[i]! * nx
-        const vtf = vt * 0.92
-        this.vx[i] = this.vx[i]! - (-ny) * vt + (-ny) * vtf
-        this.vy[i] = this.vy[i]! - nx * vt + nx * vtf
-      }
-      const sp = Math.hypot(this.vx[i]!, this.vy[i]!)
-      if (sp > V_MAX) {
-        const s = V_MAX / sp
-        this.vx[i]! *= s
-        this.vy[i]! *= s
-      }
-      this.x[i] = this.px[i]!
-      this.y[i] = this.py[i]!
-    }
+    const buoyant = this.applyBuoyancy(world, bodies)
+    this.applySplashImpulses(world, bodyImpulse, buoyant)
+    this.cullFallen()
+    this.syncSnapshot()
+  }
 
-    // Viscosity: blend velocities with nearby particles.
-    const buckets = new Map<number, number[]>()
-    for (let i = 0; i < this.n; i++) {
-      const cx = Math.floor(this.x[i]! * invCell)
-      const cy = Math.floor(this.y[i]! * invCell)
-      const k = key(cx, cy)
-      let list = buckets.get(k)
-      if (!list) {
-        list = []
-        buckets.set(k, list)
-      }
-      list.push(i)
-    }
-    const ovx = this.vx.slice()
-    const ovy = this.vy.slice()
-    const viscR = diam * 1.5
-    for (let i = 0; i < this.n; i++) {
-      let ax = 0
-      let ay = 0
-      let wsum = 0
-      const cx = Math.floor(this.x[i]! * invCell)
-      const cy = Math.floor(this.y[i]! * invCell)
-      for (let ox = -1; ox <= 1; ox++) {
-        for (let oy = -1; oy <= 1; oy++) {
-          const list = buckets.get(key(cx + ox, cy + oy))
-          if (!list) continue
-          for (const j of list) {
-            if (j === i) continue
-            const dx = this.x[i]! - this.x[j]!
-            const dy = this.y[i]! - this.y[j]!
-            const d = Math.hypot(dx, dy)
-            if (d > viscR || d < 1e-12) continue
-            const w = 1 - d / viscR
-            ax += (ovx[j]! - ovx[i]!) * w
-            ay += (ovy[j]! - ovy[i]!) * w
-            wsum += w
-          }
-        }
-      }
-      if (wsum > 0) {
-        this.vx[i]! += (ax / wsum) * VISC_BLEND
-        this.vy[i]! += (ay / wsum) * VISC_BLEND
-      }
-    }
-
+  /**
+   * Particle→body impulses for splash/impact. Never applied to a nearly still
+   * rigid (`applyImpulse` always wakes Rapier). A body already getting Archimedes
+   * only receives kicks at impact speed, not a soft-sphere cushion.
+   */
+  private applySplashImpulses(
+    world: PhysicsWorld,
+    bodyImpulse: Map<BodyId, { x: number; y: number; jx: number; jy: number }>,
+    buoyant: ReadonlySet<BodyId>,
+  ): void {
     for (const [id, imp] of bodyImpulse) {
       const body = world.getBody(id)
       if (!body || body.type !== 'dynamic') continue
+      const bodySp = Math.hypot(body.vx, body.vy)
+      const almostStill = bodySp < BODY_REST_SPEED && Math.abs(body.omega) < BODY_REST_OMEGA
+      if (almostStill) continue
+      if (buoyant.has(id) && bodySp < BODY_IMPACT_SPEED) continue
       let jx = imp.jx * COUPLING
       let jy = imp.jy * COUPLING
       const mag = Math.hypot(jx, jy)
+      if (mag < MIN_COUPLE_IMPULSE) continue
       if (mag > MAX_BODY_IMPULSE) {
         const s = MAX_BODY_IMPULSE / mag
         jx *= s
         jy *= s
       }
       world.applyImpulse(id, jx, jy, { x: imp.x, y: imp.y })
-      world.wake(id)
     }
-
-    this.applyBuoyancy(world)
-    this.cullFallen()
-    this.syncSnapshot()
   }
 
   /**
-   * Archimedes from particles in an expanded body neighbourhood (shell around the
-   * collider). Free-surface clipping launched bodies when splash raised the surface;
-   * overlap-only was too weak. The shell gives a stable displaced-area proxy.
+   * Archimedes: clip each collider against a local free surface estimated from
+   * nearby particles (column maxes along −ĝ). The surface is taken from the
+   * **flanks** of the body, never from its own column — water riding on top
+   * would otherwise report the body as fully submerged and levitate it.
+   * Returns ids that received lift so splash impulses can stay off at rest.
    */
-  private applyBuoyancy(world: PhysicsWorld): void {
+  private applyBuoyancy(world: PhysicsWorld, bodies: readonly SceneBody[]): Set<BodyId> {
     this.buoyancyDebug.length = 0
+    const buoyant = new Set<BodyId>()
     const g = world.gravity
     const gmag = Math.hypot(g.x, g.y)
-    if (gmag < 1e-8 || this.n === 0) return
+    if (gmag < 1e-8 || this.n === 0) return buoyant
     const gx = g.x / gmag
     const gy = g.y / gmag
-    const shell = Math.max(this.diameter * 1.8, 0.16)
-    const searchR = 2.0
-    const searchR2 = searchR * searchR
+    const nx = -gx
+    const ny = -gy
+    const tx = -ny
+    const ty = nx
+    const colW = Math.max(this.spacing, 0.06)
+    const contactR = this.radius
+    const gScaleOf = new Map(bodies.map((b) => [b.id, b.gravityScale]))
+    const seen = new Set<BodyId>()
 
     world.forEachBody((body) => {
       if (body.type !== 'dynamic') return
       const colliders = world.getColliders(body.id)
       if (!colliders.length) return
 
-      let count = 0
-      let sx = 0
-      let sy = 0
+      const polys: Vec2[][] = []
+      let tMin = Infinity
+      let tMax = -Infinity
+      let sMin = Infinity
+      let sMax = -Infinity
+      for (const col of colliders) {
+        if (col.isSensor) continue
+        const ox = body.x + (col.offset?.x ?? 0)
+        const oy = body.y + (col.offset?.y ?? 0)
+        const ang = body.angle + (col.angle ?? 0)
+        for (const verts of shapeToWorldPolygons(col.shape, ox, oy, ang)) {
+          polys.push(verts)
+          for (const p of verts) {
+            const t = p.x * tx + p.y * ty
+            const s = p.x * nx + p.y * ny
+            if (t < tMin) tMin = t
+            if (t > tMax) tMax = t
+            if (s < sMin) sMin = s
+            if (s > sMax) sMax = s
+          }
+        }
+      }
+      if (!polys.length || !Number.isFinite(tMin)) return
+
+      // Sample flanks well past the body; surface height must not come from the
+      // body's own column (under-body water + film riding on the top face).
+      const bodyPadT = Math.max(colW * 1.5, contactR * 2, (tMax - tMin) * 0.1)
+      const padT = Math.max(colW * 6, (tMax - tMin) * 0.5, bodyPadT + colW * 3, 0.35)
+      const bandT0 = tMin - padT
+      const bandT1 = tMax + padT
+      const colT0 = tMin - bodyPadT
+      const colT1 = tMax + bodyPadT
+      const surfaceArgs = {
+        x: this.x,
+        y: this.y,
+        n: this.n,
+        nx,
+        ny,
+        tMin: bandT0,
+        tMax: bandT1,
+        sMin: sMin - 1.5,
+        sMax: sMax + colW * 3,
+        columnWidth: colW,
+      }
+      // Prefer flanks. Fallback for tight cups with no usable side water: still
+      // reject the contact shell and any film above the body's top face.
+      let clipDRaw = estimateFreeSurfaceD({
+        ...surfaceArgs,
+        skip: (_i, _s, t) => t >= colT0 && t <= colT1,
+      })
+      if (clipDRaw === null) {
+        clipDRaw = estimateFreeSurfaceD({
+          ...surfaceArgs,
+          skip: (i, s, t) => {
+            if (particleInBodyShell(this.x[i]!, this.y[i]!, contactR, body, colliders)) {
+              return true
+            }
+            // Riding film: above the body, within its tangent span.
+            return s > sMax + contactR && t >= colT0 && t <= colT1
+          },
+        })
+      }
+      if (clipDRaw === null) return
+      // Body entirely above the live surface: drop lagged clip so a collapsing
+      // column cannot keep applying full Archimedes after the pool has fallen.
+      if (clipDRaw < sMin - colW * 0.5) {
+        this.surfaceD.delete(body.id)
+        this.forceMag.delete(body.id)
+        return
+      }
+      const prevD = this.surfaceD.get(body.id)
+      const blend =
+        prevD === undefined ? 1 : Math.abs(clipDRaw - prevD) > 0.3 ? 0.45 : SURFACE_BLEND
+      // Snap down with the pool (collapsed column); lag only on the way up so splash
+      // does not yank Archimedes.
+      const clipD =
+        prevD === undefined || clipDRaw < prevD ? clipDRaw : prevD + (clipDRaw - prevD) * blend
+      this.surfaceD.set(body.id, clipD)
+
       let densSum = 0
       let viscSum = 0
+      let densN = 0
       for (let i = 0; i < this.n; i++) {
         const px = this.x[i]!
         const py = this.y[i]!
-        const dx = px - body.x
-        const dy = py - body.y
-        if (dx * dx + dy * dy > searchR2) continue
-        if (!particleInBodyShell(px, py, shell, body, colliders)) continue
-        count++
-        sx += px
-        sy += py
+        const t = px * tx + py * ty
+        if (t < bandT0 || t > bandT1) continue
+        const s = px * nx + py * ny
+        if (s < sMin - 1.5 || s > clipD + colW) continue
         densSum += this.density[i]!
         viscSum += this.viscosity[i]!
+        densN++
       }
-      if (count < 4) return
+      if (densN < 4) return
+      const ρ = densSum / densN
+      const μ = viscSum / densN
 
-      const ρ = densSum / count
-      const μ = viscSum / count
-      const bodyArea = Math.max(1e-4, approxBodyArea(colliders))
-      let area = count * this.particleArea
-      // Shell overcounts; scale so a fully surround body ≈ bodyArea.
-      area = Math.min(bodyArea, area * 0.65)
+      let area = 0
+      let cx = 0
+      let cy = 0
+      let clippedForDrag: Vec2[] = []
+      for (const verts of polys) {
+        const clipped = clipHalfPlane(verts, nx, ny, clipD)
+        const a = polygonArea(clipped)
+        if (a < 1e-8) continue
+        const c = polygonCentroid(clipped)
+        cx += c.x * a
+        cy += c.y * a
+        area += a
+        if (clipped.length > clippedForDrag.length) clippedForDrag = clipped
+      }
+      if (area < 1e-8) return
+      cx /= area
+      cy /= area
 
-      const mass = Math.max(1e-3, body.mass)
-      let F = ρ * area * gmag
-      const Fmax = 1.75 * mass * gmag
-      if (F > Fmax) F = Fmax
-
-      // Kill upward force when already rising out of the fluid.
-      const upVel = -gx * body.vx - gy * body.vy
-      if (upVel > 0.2) F *= 1 / (1 + 2.5 * upVel)
-
-      const cx = sx / count
-      const cy = sy / count
+      const gScale = gScaleOf.get(body.id) ?? 1
+      const Fraw = ρ * area * gmag * gScale
+      const prevF = this.forceMag.get(body.id)
+      const weight = Math.max(1e-6, body.mass * gmag)
+      const fBlend =
+        prevF === undefined ? 1 : Math.abs(Fraw - prevF) > 0.3 * weight ? 0.45 : FORCE_BLEND
+      const F = prevF === undefined || Fraw < prevF ? Fraw : prevF + (Fraw - prevF) * fBlend
+      this.forceMag.set(body.id, F)
       const fx = -gx * F
       const fy = -gy * F
-      const speed = Math.hypot(body.vx, body.vy)
-      const charLen = Math.sqrt(area)
-      const quad = 0.8 * ρ * charLen * speed
-      const stokes = 8 * Math.PI * Math.max(μ, 0.001)
-      world.applyForce(
-        body.id,
-        fx - (quad + stokes) * body.vx,
-        fy - (quad + stokes) * body.vy,
-        { x: cx, y: cy },
-      )
-      world.applyTorque(body.id, -body.omega * ρ * area * 0.2)
-      world.wake(body.id)
+      const drag = fluidDragForce(body.vx, body.vy, ρ, μ, clippedForDrag, area)
+      const torqueDamp = fluidTorqueDamp(ρ, area, body.omega)
+      const bodySp = Math.hypot(body.vx, body.vy)
+      const almostStill = bodySp < BODY_REST_SPEED && Math.abs(body.omega) < BODY_REST_OMEGA
+      const residual = Math.abs(F - weight) / weight
+      const liftRatio = F / weight
+      const at = almostStill ? { x: body.x, y: body.y } : { x: cx, y: cy }
+      world.applyForce(body.id, fx + drag.x, fy + drag.y, at, false)
+      world.applyTorque(body.id, torqueDamp, false)
+      seen.add(body.id)
+      buoyant.add(body.id)
+      // Wake a sunk floater so Archimedes can lift it; do not wake wet walls (lift ≪ mg).
+      if (liftRatio > 0.35 && residual > 0.5) {
+        world.wake(body.id)
+      } else if (liftRatio > 0.35 && residual < 0.35) {
+        world.setVelocity(body.id, body.vx * 0.92, body.vy * 0.92, body.omega * 0.88, false)
+        if (
+          almostStill &&
+          residual < 0.12 &&
+          liftRatio < 1.35 &&
+          bodySp < 0.04 &&
+          Math.abs(body.omega) < 0.04
+        ) {
+          world.setVelocity(body.id, 0, 0, 0, false)
+        }
+      }
       this.buoyancyDebug.push({
         bodyId: body.id,
         area,
-        cx,
-        cy,
-        fx: fx - (quad + stokes) * body.vx,
-        fy: fy - (quad + stokes) * body.vy,
+        cx: at.x,
+        cy: at.y,
+        fx: fx + drag.x,
+        fy: fy + drag.y,
       })
     })
+    for (const id of [...this.surfaceD.keys()]) {
+      if (seen.has(id)) continue
+      this.surfaceD.delete(id)
+      this.forceMag.delete(id)
+    }
+    return buoyant
   }
 
   private ensureCap(need: number): void {
@@ -431,6 +626,11 @@ export class PbfFluidSolver {
     const nvy = new Float64Array(next)
     const nd = new Float64Array(next)
     const nmu = new Float64Array(next)
+    const nrho = new Float64Array(next)
+    const nrhoN = new Float64Array(next)
+    const npress = new Float64Array(next)
+    const npressN = new Float64Array(next)
+    const nsph = new Float64Array(next)
     nx.set(this.x.subarray(0, this.n))
     ny.set(this.y.subarray(0, this.n))
     npx.set(this.px.subarray(0, this.n))
@@ -439,6 +639,11 @@ export class PbfFluidSolver {
     nvy.set(this.vy.subarray(0, this.n))
     nd.set(this.density.subarray(0, this.n))
     nmu.set(this.viscosity.subarray(0, this.n))
+    nrho.set(this.rho.subarray(0, this.n))
+    nrhoN.set(this.rhoNear.subarray(0, this.n))
+    npress.set(this.press.subarray(0, this.n))
+    npressN.set(this.pressNear.subarray(0, this.n))
+    nsph.set(this.sphDensity.subarray(0, this.n))
     this.x = nx
     this.y = ny
     this.px = npx
@@ -447,6 +652,11 @@ export class PbfFluidSolver {
     this.vy = nvy
     this.density = nd
     this.viscosity = nmu
+    this.rho = nrho
+    this.rhoNear = nrhoN
+    this.press = npress
+    this.pressNear = npressN
+    this.sphDensity = nsph
     this.volumeId.length = next
     this.color.length = next
     this.opacity.length = next
@@ -467,6 +677,7 @@ export class PbfFluidSolver {
         this.opacity[w] = this.opacity[i]!
         this.density[w] = this.density[i]!
         this.viscosity[w] = this.viscosity[i]!
+        this.sphDensity[w] = this.sphDensity[i]!
       }
       w++
     }
@@ -484,6 +695,7 @@ export class PbfFluidSolver {
         volumeId: this.volumeId[i]!,
         color: this.color[i]!,
         opacity: this.opacity[i]!,
+        density: this.sphDensity[i]!,
       }
     }
   }
@@ -499,13 +711,21 @@ function seedVolume(vol: SceneFluidVolume, already: number, world?: PhysicsWorld
   }
   const room = PBF_MAX_PARTICLES - already
   const margin = spacing * 0.55
+  const amp = spacing * 0.12
+  let rng = hashVolumeId(vol.id)
   const out: Seed[] = []
   for (let i = 0; i < filled.length && out.length < room; i++) {
     const p = filled[i]!
-    if (world && pointOverlapsSolid(world, p.x, p.y, margin)) continue
+    rng = lcg(rng)
+    const jx = (rng / 4294967296) * 2 * amp - amp
+    rng = lcg(rng)
+    const jy = (rng / 4294967296) * 2 * amp - amp
+    const x = p.x + jx
+    const y = p.y + jy
+    if (world && pointOverlapsSolid(world, x, y, margin)) continue
     out.push({
-      x: p.x,
-      y: p.y,
+      x,
+      y,
       volumeId: vol.id,
       color: mat.color,
       opacity: mat.opacity,
@@ -514,6 +734,19 @@ function seedVolume(vol: SceneFluidVolume, already: number, world?: PhysicsWorld
     })
   }
   return out
+}
+
+function hashVolumeId(id: string): number {
+  let h = 2166136261
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+function lcg(state: number): number {
+  return (Math.imul(state, 1664525) + 1013904223) >>> 0
 }
 
 function pointOverlapsSolid(world: PhysicsWorld, x: number, y: number, radius: number): boolean {
@@ -551,32 +784,6 @@ function particleInBodyShell(
   return false
 }
 
-function approxBodyArea(colliders: ColliderDesc[]): number {
-  let a = 0
-  for (const col of colliders) {
-    if (col.isSensor) continue
-    const s = col.shape
-    if (s.kind === 'circle') a += Math.PI * s.radius * s.radius
-    else if (s.kind === 'box') a += 4 * s.hx * s.hy
-    else if (s.kind === 'capsule') {
-      a += 4 * s.radius * s.halfHeight + Math.PI * s.radius * s.radius
-    } else if (s.kind === 'convex') {
-      let minX = Infinity
-      let minY = Infinity
-      let maxX = -Infinity
-      let maxY = -Infinity
-      for (const p of s.vertices) {
-        if (p.x < minX) minX = p.x
-        if (p.y < minY) minY = p.y
-        if (p.x > maxX) maxX = p.x
-        if (p.y > maxY) maxY = p.y
-      }
-      a += Math.max(0, maxX - minX) * Math.max(0, maxY - minY)
-    }
-  }
-  return a
-}
-
 function fillPolygon(poly: readonly Vec2[], spacing: number): Vec2[] {
   let minX = Infinity
   let minY = Infinity
@@ -601,172 +808,4 @@ function fillPolygon(poly: readonly Vec2[], spacing: number): Vec2[] {
     row++
   }
   return out
-}
-
-function collideSolid(
-  px: Float64Array,
-  py: Float64Array,
-  i: number,
-  radius: number,
-  world: PhysicsWorld,
-  bodyImpulse: Map<BodyId, { x: number; y: number; jx: number; jy: number }>,
-  fromX: number,
-  fromY: number,
-): void {
-  let x = px[i]!
-  let y = py[i]!
-
-  world.forEachBody((body) => {
-    const colliders = world.getColliders(body.id)
-    for (const col of colliders) {
-      if (col.isSensor) continue
-      const shape = col.shape
-      const ox = body.x + (col.offset?.x ?? 0)
-      const oy = body.y + (col.offset?.y ?? 0)
-      const ang = body.angle + (col.angle ?? 0)
-      const hit = pushOutOfShape(x, y, radius, shape, ox, oy, ang, fromX, fromY)
-      if (!hit) continue
-      const jx = x - hit.x
-      const jy = y - hit.y
-      x = hit.x
-      y = hit.y
-      accumulateImpulse(bodyImpulse, body.id, hit.cx, hit.cy, jx, jy)
-    }
-  })
-
-  px[i] = x
-  py[i] = y
-}
-
-function pushOutOfShape(
-  x: number,
-  y: number,
-  radius: number,
-  shape: PhysicsShape,
-  ox: number,
-  oy: number,
-  ang: number,
-  fromX?: number,
-  fromY?: number,
-): { x: number; y: number; cx: number; cy: number } | null {
-  const c = Math.cos(ang)
-  const s = Math.sin(ang)
-  const lx = (x - ox) * c + (y - oy) * s
-  const ly = -(x - ox) * s + (y - oy) * c
-  const flx =
-    fromX === undefined || fromY === undefined ? lx : (fromX - ox) * c + (fromY - oy) * s
-  const fly =
-    fromX === undefined || fromY === undefined ? ly : -(fromX - ox) * s + (fromY - oy) * c
-
-  if (shape.kind === 'circle') {
-    const r = shape.radius + radius
-    const d = Math.hypot(lx, ly)
-    if (d >= r) return null
-    if (d < 1e-12) {
-      return { x: ox - s * r, y: oy + c * r, cx: ox, cy: oy }
-    }
-    const nlx = (lx / d) * r
-    const nly = (ly / d) * r
-    return {
-      x: ox + nlx * c - nly * s,
-      y: oy + nlx * s + nly * c,
-      cx: ox,
-      cy: oy,
-    }
-  }
-
-  if (shape.kind === 'box') {
-    const hx = shape.hx
-    const hy = shape.hy
-    const ehx = hx + radius
-    const ehy = hy + radius
-
-    const outside = Math.abs(lx) >= ehx || Math.abs(ly) >= ehy
-    if (outside) {
-      const qx = Math.max(-hx, Math.min(hx, lx))
-      const qy = Math.max(-hy, Math.min(hy, ly))
-      const dx = lx - qx
-      const dy = ly - qy
-      const d = Math.hypot(dx, dy)
-      if (d >= radius || d < 1e-12) return null
-      const nx = dx / d
-      const ny = dy / d
-      const nlx = qx + nx * radius
-      const nly = qy + ny * radius
-      return {
-        x: ox + nlx * c - nly * s,
-        y: oy + nlx * s + nly * c,
-        cx: ox + qx * c - qy * s,
-        cy: oy + qx * s + qy * c,
-      }
-    }
-
-    // Inside expanded box. Prefer the face the particle came from so thin sticks
-    // do not eject overlapping water to the far side of the container.
-    let nlx = lx
-    let nly = ly
-    const fromLeftRight = Math.abs(flx) >= ehx
-    const fromTopBottom = Math.abs(fly) >= ehy
-    if (fromLeftRight && (!fromTopBottom || Math.abs(flx) >= Math.abs(fly))) {
-      nlx = (flx >= 0 ? 1 : -1) * ehx
-    } else if (fromTopBottom) {
-      nly = (fly >= 0 ? 1 : -1) * ehy
-    } else if (hx <= hy) {
-      const sx = Math.abs(flx) > 1e-8 ? Math.sign(flx) : lx >= 0 ? 1 : -1
-      nlx = sx * ehx
-    } else {
-      const sy = Math.abs(fly) > 1e-8 ? Math.sign(fly) : ly >= 0 ? 1 : -1
-      nly = sy * ehy
-    }
-    const cx = Math.max(-hx, Math.min(hx, lx))
-    const cy = Math.max(-hy, Math.min(hy, ly))
-    return {
-      x: ox + nlx * c - nly * s,
-      y: oy + nlx * s + nly * c,
-      cx: ox + cx * c - cy * s,
-      cy: oy + cx * s + cy * c,
-    }
-  }
-
-  if (shape.kind === 'capsule') {
-    const hh = shape.halfHeight
-    const r = shape.radius + radius
-    const clamped = Math.max(-hh, Math.min(hh, ly))
-    const dx = lx
-    const dy = ly - clamped
-    const d = Math.hypot(dx, dy)
-    if (d >= r) return null
-    if (d < 1e-12) {
-      return { x: ox - s * r, y: oy + c * r, cx: ox, cy: oy }
-    }
-    const nlx = (dx / d) * r
-    const nly = clamped + (dy / d) * r
-    return {
-      x: ox + nlx * c - nly * s,
-      y: oy + nlx * s + nly * c,
-      cx: ox,
-      cy: oy,
-    }
-  }
-
-  return null
-}
-
-function accumulateImpulse(
-  map: Map<BodyId, { x: number; y: number; jx: number; jy: number }>,
-  id: BodyId,
-  x: number,
-  y: number,
-  jx: number,
-  jy: number,
-): void {
-  const prev = map.get(id)
-  if (!prev) {
-    map.set(id, { x, y, jx, jy })
-    return
-  }
-  prev.jx += jx
-  prev.jy += jy
-  prev.x = (prev.x + x) * 0.5
-  prev.y = (prev.y + y) * 0.5
 }

@@ -20,6 +20,6 @@ world.addBody(bodyToDesc(body))
 
 `appliedForces.length = 0` al inicio de cada `physicsStep`. Fuerza sostenida: `persistentForces`, reaplicada cada paso.
 
-Fluido: recorte hidrostático analítico, no SPH. Picking: `pointHit` y fallback `pickBody` (geometría de escena, poses vivas).
+Fluido: tanque analítico (Arquímedes + arrastre Stokes/cuadrático, no SPH) y, aparte, fluido libre de partículas SPH Clavet (double-density, no PBF). Cápsula = estadio; el recorte de superficie es el semiplano alineado con `−g`. Picking: `pointHit` y fallback `pickBody` (geometría de escena, poses vivas).
 
 Tras `destroy()`, no leas colliders ni bodies de Rapier.

@@ -141,12 +141,12 @@ export interface PhysicsWorld {
   hasBody(id: BodyId): boolean
   getBody(id: BodyId): BodySnapshot | null
   setTransform(id: BodyId, x: number, y: number, angle: number): void
-  setVelocity(id: BodyId, vx: number, vy: number, omega: number): void
+  setVelocity(id: BodyId, vx: number, vy: number, omega: number, wake?: boolean): void
   setBodyType(id: BodyId, type: BodyType): void
   setGravityScale(id: BodyId, scale: number): void
   setCcd(id: BodyId, enabled: boolean): void
-  applyForce(id: BodyId, fx: number, fy: number, point?: Vec2): void
-  applyTorque(id: BodyId, torque: number): void
+  applyForce(id: BodyId, fx: number, fy: number, point?: Vec2, wake?: boolean): void
+  applyTorque(id: BodyId, torque: number, wake?: boolean): void
   applyImpulse(id: BodyId, jx: number, jy: number, point?: Vec2): void
   wake(id: BodyId): void
   step(dt?: number): void

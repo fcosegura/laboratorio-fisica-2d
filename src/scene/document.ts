@@ -51,8 +51,8 @@ export type SceneFluidRegion = {
 }
 
 /**
- * Seed volume for particle (PBF) fluid. Particles are regenerated on reset/reload from
- * this polygon; runtime particle state is not persisted in the document.
+ * Seed volume for the particle fluid (spill / pools). Regenerated on reset/reload
+ * from this polygon; runtime particle state is not persisted in the document.
  */
 export type SceneFluidVolume = {
   id: FluidRegionId

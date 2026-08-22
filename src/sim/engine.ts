@@ -131,8 +131,9 @@ export class SimulationEngine {
       this.world.applyForce(f.bodyId, f.fx, f.fy, { x: f.x, y: f.y })
     }
     const t0 = performance.now()
+    // Analytic tanks, then SPH Clavet particles (distinct models).
     this.fluids.step(this.world, this.doc.fluidRegions, this.doc.bodies, this.curr)
-    this.particles.step(this.world, PHYSICS_DT)
+    this.particles.step(this.world, PHYSICS_DT, this.doc.bodies)
     const t1 = performance.now()
     this.world.step(PHYSICS_DT)
     const t2 = performance.now()

@@ -6,7 +6,7 @@ Sandbox de física 2D en el navegador. React no calcula física. El bucle vive e
 SceneDocument (autoría)
   → History / Command
   → SimulationEngine
-  → Rapier 2D + fluido analítico
+  → Rapier 2D + fluido analítico / SPH Clavet
   → snapshot interpolado
   → PixiJS
 ```
@@ -75,7 +75,7 @@ Contratos:
 - `PixiRenderer.init()` crea los contenedores. Tras `destroy()`, `draw()` no debe tocar nodos destruidos.
 - `appliedForces` se vacía al inicio de cada `physicsStep`. Fuerza sostenida / agarre van en `persistentForces`.
 - Picking: `engine.bodyAt` usa `pointHit` de Rapier y, si falla (pausa, sensores), `pickBody` sobre la geometría de la escena.
-- Fluido: regiones analíticas (Arquímedes + arrastre Stokes/cuadrático), no partículas ni SPH. Cápsula = estadio; el recorte de superficie es el semiplano alineado con `−g`.
+- Fluido: tanques analíticos (Arquímedes + arrastre Stokes/cuadrático; superficie plana, no se derrama) y volúmenes de partículas SPH Clavet (`PbfFluid`, double-density, no es PBF). Cápsula = estadio; el recorte de superficie es el semiplano alineado con `−g`. Flotación didáctica → `fluidRegions`. Derrame / charco → `fluidVolumes`. No mezclar ambos modelos sobre el mismo cuerpo.
 
 ## Interacción y UI
 

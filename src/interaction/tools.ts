@@ -26,7 +26,12 @@ export const TOOL_META: {
   { id: 'polygon', label: 'Polígono', hint: 'G', group: 'create' },
   { id: 'line', label: 'Plataforma', hint: 'L', group: 'create' },
   { id: 'fluid', label: 'Tanque', hint: 'W · Arquímedes, superficie plana', group: 'create' },
-  { id: 'spill', label: 'Fluido libre', hint: 'E · partículas, se derrama', group: 'create' },
+  {
+    id: 'spill',
+    label: 'Fluido libre',
+    hint: 'E · SPH Clavet, se derrama',
+    group: 'create',
+  },
   { id: 'force', label: 'Fuerza', hint: 'F · arrastra; Mayús sostiene', group: 'phys' },
   { id: 'measure', label: 'Medir', hint: 'M', group: 'phys' },
   { id: 'joint', label: 'Unir', hint: 'J · arrastra de un cuerpo a otro', group: 'phys' },

@@ -207,16 +207,66 @@ export function closestPointOnSegment(p: Vec2, a: Vec2, b: Vec2): Vec2 {
 }
 
 export function distanceToPolygon(p: Vec2, poly: readonly Vec2[]): number {
-  let min = Infinity
+  const hit = closestPointOnPolygon(p, poly)
+  return hit ? hit.signedDistance : Infinity
+}
+
+export type ClosestOnPolygon = {
+  point: Vec2
+  signedDistance: number
+  nx: number
+  ny: number
+}
+
+/** Closest boundary point, signed distance (negative inside), and outward unit normal. */
+export function closestPointOnPolygon(p: Vec2, poly: readonly Vec2[]): ClosestOnPolygon | null {
   const n = poly.length
+  if (n < 2) return null
+  let min = Infinity
+  let qx = p.x
+  let qy = p.y
+  let enx = 1
+  let eny = 0
+  const ccw = signedArea(poly) >= 0
   for (let i = 0; i < n; i++) {
     const a = poly[i]!
     const b = poly[(i + 1) % n]!
     const q = closestPointOnSegment(p, a, b)
     const d = Math.hypot(p.x - q.x, p.y - q.y)
-    if (d < min) min = d
+    if (d > min) continue
+    min = d
+    qx = q.x
+    qy = q.y
+    const ex = b.x - a.x
+    const ey = b.y - a.y
+    const el = Math.hypot(ex, ey) || 1
+    // CCW: interior is left of the edge, so outward is rotate-CW (ey, -ex).
+    if (ccw) {
+      enx = ey / el
+      eny = -ex / el
+    } else {
+      enx = -ey / el
+      eny = ex / el
+    }
   }
-  return pointInPolygon(p, poly) ? -min : min
+  const inside = n >= 3 && pointInPolygon(p, poly)
+  let nx = enx
+  let ny = eny
+  if (min > 1e-12) {
+    if (inside) {
+      nx = (qx - p.x) / min
+      ny = (qy - p.y) / min
+    } else {
+      nx = (p.x - qx) / min
+      ny = (p.y - qy) / min
+    }
+  }
+  return {
+    point: vec2(qx, qy),
+    signedDistance: inside ? -min : min,
+    nx,
+    ny,
+  }
 }
 
 export { cross }

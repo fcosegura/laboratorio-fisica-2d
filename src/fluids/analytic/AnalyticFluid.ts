@@ -1,8 +1,5 @@
 import type { Vec2 } from '../../core/math/vec2.ts'
 import {
-  boxToPolygon,
-  capsuleToPolygon,
-  circleToPolygon,
   clipHalfPlane,
   clipPolygon,
   polygonArea,
@@ -12,6 +9,7 @@ import type { SceneBody, SceneFluidRegion } from '../../scene/document.ts'
 import { getFluid } from '../../materials/catalog.ts'
 import type { PhysicsWorld } from '../../physics/ports.ts'
 import type { BodySnapshot } from '../../physics/ports.ts'
+import { shapeToWorldPolygon } from '../bodyPolygon.ts'
 
 export type FluidSample = {
   regionId: string
@@ -45,21 +43,7 @@ export const STOKES_DRAG_K = 4 * Math.PI
 export const TORQUE_DRAG_C = 0.15
 
 function bodyPolygon(body: SceneBody, snap: BodySnapshot): Vec2[] {
-  const s = body.shape
-  if (s.kind === 'circle') return circleToPolygon(snap.x, snap.y, s.radius, 28)
-  if (s.kind === 'box') return boxToPolygon(snap.x, snap.y, s.hx, s.hy, snap.angle)
-  if (s.kind === 'convex') {
-    const c = Math.cos(snap.angle)
-    const si = Math.sin(snap.angle)
-    return s.vertices.map((p) => ({
-      x: snap.x + p.x * c - p.y * si,
-      y: snap.y + p.x * si + p.y * c,
-    }))
-  }
-  if (s.kind === 'capsule') {
-    return capsuleToPolygon(snap.x, snap.y, s.halfHeight, s.radius, snap.angle, 12)
-  }
-  return []
+  return shapeToWorldPolygon(body.shape, snap.x, snap.y, snap.angle)
 }
 
 /** Span of the polygon along the plane nx x + ny y = d, measured on the tangent. */
@@ -128,8 +112,7 @@ export function restPlaneD(
     if (s > sMax) sMax = s
   }
   const ySpan = yMax - yMin
-  const fillFrac =
-    ySpan > 1e-9 ? Math.min(1, Math.max(0, (restSurfaceY - yMin) / ySpan)) : 1
+  const fillFrac = ySpan > 1e-9 ? Math.min(1, Math.max(0, (restSurfaceY - yMin) / ySpan)) : 1
   return sMin + fillFrac * (sMax - sMin)
 }
 

@@ -1,7 +1,6 @@
 /**
- * Automated evaluation of particle-fluid (PBF) behaviour across authored particle
- * experiments (vaso / spill) and synthetic scenarios. Float/sink pedagogy demos
- * use fluidRegions and are covered in physics.test.ts.
+ * Automated evaluation of the SPH Clavet particle fluid (spill / pools).
+ * Not PBF. Float/sink pedagogy demos use fluidRegions and live in fluids.test.ts.
  * Failures indicate physics regressions; console metrics summarize pass/fail for manual review.
  */
 import { describe, expect, it } from 'vitest'
@@ -26,7 +25,17 @@ function stats(particles: { x: number; y: number }[]) {
     cy += p.y
   }
   const n = particles.length || 1
-  return { minX, maxX, minY, maxY, cx: cx / n, cy: cy / n, n: particles.length, w: maxX - minX, h: maxY - minY }
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    cx: cx / n,
+    cy: cy / n,
+    n: particles.length,
+    w: maxX - minX,
+    h: maxY - minY,
+  }
 }
 
 function speed(b: BodySnapshot): number {

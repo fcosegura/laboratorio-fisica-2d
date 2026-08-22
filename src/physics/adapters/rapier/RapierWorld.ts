@@ -1,7 +1,12 @@
 import type { Collider, ImpulseJoint, RigidBody, World } from '@dimforge/rapier2d-compat'
 import type { BodyId, ColliderId, JointId } from '../../../core/ids.ts'
 import { decomposePolygon, toXYArray } from '../../../core/math/decompose.ts'
-import { ensureCCW, isConvex, polygonArea, removeDuplicateVertices } from '../../../core/math/polygon.ts'
+import {
+  ensureCCW,
+  isConvex,
+  polygonArea,
+  removeDuplicateVertices,
+} from '../../../core/math/polygon.ts'
 import type { Vec2 } from '../../../core/math/vec2.ts'
 import type {
   BodyDesc,
@@ -38,9 +43,16 @@ type ShapePart = {
 function shapeToParts(R: RapierModule, shape: PhysicsShape): ShapePart[] {
   switch (shape.kind) {
     case 'circle':
-      return [{ desc: R.ColliderDesc.ball(shape.radius), areaWeight: Math.PI * shape.radius * shape.radius }]
+      return [
+        {
+          desc: R.ColliderDesc.ball(shape.radius),
+          areaWeight: Math.PI * shape.radius * shape.radius,
+        },
+      ]
     case 'box':
-      return [{ desc: R.ColliderDesc.cuboid(shape.hx, shape.hy), areaWeight: 4 * shape.hx * shape.hy }]
+      return [
+        { desc: R.ColliderDesc.cuboid(shape.hx, shape.hy), areaWeight: 4 * shape.hx * shape.hy },
+      ]
     case 'capsule':
       return [
         {
@@ -82,8 +94,15 @@ export class RapierWorld implements PhysicsWorld {
   private readonly colliderDescs = new Map<BodyId, ColliderDesc[]>()
   private readonly joints = new Map<JointId, ImpulseJoint>()
   private readonly jointEnds = new Map<JointId, { a: BodyId; b: BodyId }>()
-  private readonly pendingForces: { id: BodyId; fx: number; fy: number; px?: number; py?: number }[] = []
-  private readonly pendingTorques: { id: BodyId; tau: number }[] = []
+  private readonly pendingForces: {
+    id: BodyId
+    fx: number
+    fy: number
+    px?: number
+    py?: number
+    wake: boolean
+  }[] = []
+  private readonly pendingTorques: { id: BodyId; tau: number; wake: boolean }[] = []
   private freed = false
 
   constructor(R: RapierModule, gravity: Vec2, dt: number) {
@@ -217,12 +236,12 @@ export class RapierWorld implements PhysicsWorld {
     body.setRotation(angle, true)
   }
 
-  setVelocity(id: BodyId, vx: number, vy: number, omega: number): void {
+  setVelocity(id: BodyId, vx: number, vy: number, omega: number, wake = true): void {
     if (this.freed) return
     const body = this.bodies.get(id)
     if (!body) return
-    body.setLinvel({ x: vx, y: vy }, true)
-    body.setAngvel(omega, true)
+    body.setLinvel({ x: vx, y: vy }, wake)
+    body.setAngvel(omega, wake)
   }
 
   setBodyType(id: BodyId, type: BodyType): void {
@@ -249,14 +268,14 @@ export class RapierWorld implements PhysicsWorld {
     this.bodies.get(id)?.enableCcd(enabled)
   }
 
-  applyForce(id: BodyId, fx: number, fy: number, point?: Vec2): void {
+  applyForce(id: BodyId, fx: number, fy: number, point?: Vec2, wake = true): void {
     if (this.freed) return
-    this.pendingForces.push({ id, fx, fy, px: point?.x, py: point?.y })
+    this.pendingForces.push({ id, fx, fy, px: point?.x, py: point?.y, wake })
   }
 
-  applyTorque(id: BodyId, torque: number): void {
+  applyTorque(id: BodyId, torque: number, wake = true): void {
     if (this.freed) return
-    this.pendingTorques.push({ id, tau: torque })
+    this.pendingTorques.push({ id, tau: torque, wake })
   }
 
   applyImpulse(id: BodyId, jx: number, jy: number, point?: Vec2): void {
@@ -288,13 +307,13 @@ export class RapierWorld implements PhysicsWorld {
       const body = this.bodies.get(f.id)
       if (!body) continue
       if (f.px !== undefined && f.py !== undefined) {
-        body.addForceAtPoint({ x: f.fx, y: f.fy }, { x: f.px, y: f.py }, true)
+        body.addForceAtPoint({ x: f.fx, y: f.fy }, { x: f.px, y: f.py }, f.wake)
       } else {
-        body.addForce({ x: f.fx, y: f.fy }, true)
+        body.addForce({ x: f.fx, y: f.fy }, f.wake)
       }
     }
     for (const t of this.pendingTorques) {
-      this.bodies.get(t.id)?.addTorque(t.tau, true)
+      this.bodies.get(t.id)?.addTorque(t.tau, t.wake)
     }
     this.world.step()
     this.pendingForces.length = 0
@@ -317,7 +336,8 @@ export class RapierWorld implements PhysicsWorld {
         this.world.contactPairsWith(c, (other) => {
           const otherId = this.colliderToBody.get(other.handle)
           if (!otherId) return
-          const key = c.handle < other.handle ? `${c.handle}:${other.handle}` : `${other.handle}:${c.handle}`
+          const key =
+            c.handle < other.handle ? `${c.handle}:${other.handle}` : `${other.handle}:${c.handle}`
           if (seen.has(key)) return
           seen.add(key)
           this.world.contactPair(c, other, (manifold, flipped) => {
@@ -353,25 +373,22 @@ export class RapierWorld implements PhysicsWorld {
   pointHit(x: number, y: number, filter?: QueryFilter): QueryHit | null {
     if (this.freed) return null
     let hit: QueryHit | null = null
-    this.world.intersectionsWithPoint(
-      { x, y },
-      (collider) => {
-        const bodyId = this.colliderToBody.get(collider.handle)
-        if (!bodyId) return true
-        if (filter?.excludeBody && bodyId === filter.excludeBody) return true
-        if (filter?.predicate && !filter.predicate(bodyId)) return true
-        hit = {
-          bodyId,
-          colliderId: String(collider.handle) as ColliderId,
-          x,
-          y,
-          nx: 0,
-          ny: 0,
-          isInside: true,
-        }
-        return false
-      },
-    )
+    this.world.intersectionsWithPoint({ x, y }, (collider) => {
+      const bodyId = this.colliderToBody.get(collider.handle)
+      if (!bodyId) return true
+      if (filter?.excludeBody && bodyId === filter.excludeBody) return true
+      if (filter?.predicate && !filter.predicate(bodyId)) return true
+      hit = {
+        bodyId,
+        colliderId: String(collider.handle) as ColliderId,
+        x,
+        y,
+        nx: 0,
+        ny: 0,
+        isInside: true,
+      }
+      return false
+    })
     return hit
   }
 
@@ -464,4 +481,3 @@ export class RapierWorld implements PhysicsWorld {
     this.jointEnds.clear()
   }
 }
-
