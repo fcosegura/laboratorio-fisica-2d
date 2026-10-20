@@ -73,13 +73,31 @@ Contratos:
 - `reload` / `reset` van en `reloadQueue` (una promesa en serie). No lances dos reconstrucciones a la vez.
 - `RapierWorld`: guarda `freed`; todos los métodos públicos deben no-op o devolver vacío tras `destroy()`. `addBody` con id existente elimina antes.
 - `PixiRenderer.init()` crea los contenedores. Tras `destroy()`, `draw()` no debe tocar nodos destruidos.
-- `appliedForces` se vacía al inicio de cada `physicsStep`. Fuerza sostenida / agarre van en `persistentForces`.
+- `appliedForces` se vacía al inicio de cada `physicsStep`. La fuerza sostenida va en `persistentForces`. El arrastre en Play va en `engine.grab`: muelle críticamente amortiguado hacia el cursor + compensación de gravedad, recalculado en cada paso con la velocidad viva (no lo congeles en `pointermove`).
+- Undo / redo: `engine.syncWorld(prev, next)` aplica solo el diff (altas, bajas, campos). `applyBodyChange` es el único sitio que decide qué campo reconstruye el cuerpo (`REBUILD_KEYS`) y cuál se aplica en vivo; `commitPatch` lo usa también.
+- `History.begin()` / `commit()` / `abort()`: varias mutaciones = un solo Ctrl+Z.
 - Picking: `engine.bodyAt` usa `pointHit` de Rapier y, si falla (pausa, sensores), `pickBody` sobre la geometría de la escena.
 - Fluido: tanques analíticos (Arquímedes + arrastre Stokes/cuadrático; superficie plana, no se derrama) y volúmenes de partículas SPH Clavet (`PbfFluid`, double-density, no es PBF). Cápsula = estadio; el recorte de superficie es el semiplano alineado con `−g`. Flotación didáctica → `fluidRegions`. Derrame / charco → `fluidVolumes`. No mezclar ambos modelos sobre el mismo cuerpo.
+- Centro de masas: `BodySnapshot.x/y` es el **origen** del cuerpo; `comX/comY` es el centro de masas y `vx/vy` es su velocidad. Registrador (x, y, Ep), trayectorias y vectores de velocidad / gravedad / CM usan `comX/comY`. Los polígonos dibujados se centran en el centroide de área.
+- Arrastre del fluido: `stableDamping` limita `c ≤ m/dt` (nunca invierte ni amplifica v). Por debajo del límite es el explícito sin cambios: las calibraciones de SPH y tanques dependen de ello.
+- Polígono hidrostático de círculo / cápsula: escalado para conservar el área exacta (umbral de flotación = ρ_fluido).
+- SPH: un solo kernel (`h`, `ρ0`) para todas las partículas; un segundo volumen reutiliza el espaciado vivo.
+
+### Simplificaciones deliberadas (documentadas, no son bugs)
+
+- SPH: velocidad de partícula limitada a 8 m/s (`V_MAX`); el agua cae más despacio que un sólido desde más de ~3 m.
+- SPH: un cuerpo que flota cerca del equilibrio recibe ×0,92 de velocidad por paso y se fija a 0 al asentarse. Amortiguación no física, visible en la gráfica de energía.
+- SPH: el acoplamiento partícula → cuerpo usa `COUPLING = 0.1` con tope `MAX_BODY_IMPULSE`; no conserva momento. La sustentación viene de Arquímedes, no de la presión SPH.
+- El empuje se multiplica por el `gravityScale` del cuerpo (en rigor depende de la gravedad del fluido). Elección pedagógica: la fracción sumergida en equilibrio no depende de `gravityScale`.
+- Combinación de contacto: rozamiento `Min`, restitución `Max` (el hielo desliza, la goma rebota), no la media geométrica habitual.
+- La amortiguación lineal / angular del cuerpo es «aire», no propiedad del material: los cuerpos dibujados nacen con 0 y cambiar de material no la toca. Los experimentos con fluido la fijan a mano.
+- La Ep del registrador usa la gravedad global; con `gravityScale ≠ 1` la energía total mostrada no se conserva.
 
 ## Interacción y UI
 
-- `reduceDown` en `src/interaction/machine.ts` es el reductor puro de pointer-down. Extiéndelo ahí; no dupliques la máquina en tests.
+- `reduceDown` / `reduceMove` en `src/interaction/machine.ts` son los reductores puros. Extiéndelos ahí; no dupliques la máquina en tests.
+- Entrada (puntero, rueda, teclado y gestos de creación) vive en `src/app/LabInput.ts`; `LabRuntime` conserva ciclo de vida, API de edición (todo por `History`) y `pushUi`.
+- Asas (`src/interaction/handles.ts`): rotar / escalar el cuerpo seleccionado y vértices del tanque seleccionado. Solo en pausa con la herramienta Seleccionar. Rotar persiste solo `angle`; escalar persiste `shape`; el tanque debe seguir convexo o el cambio se descarta.
 - Inspector: `Num` confirma en `blur` / `Enter` con `parseAndClamp`. Nunca escribas `Number(input)` en cada tecla al documento.
 - Play / pausa: Espacio. Paso: `.`. Zoom anclado al cursor. Unidades de ángulo en el inspector: grados; en el documento: radianes.
 - Textos de UI en español. Identificadores de código en inglés.
@@ -92,9 +110,9 @@ Contratos:
 
 ## Qué no reabrir como si estuviera roto
 
-Ya está corregido (no reviertas): arrastre en pausa con `orig` de la pose viva; `bodyToDesc` unificado; cola de `reload`; guardias `freed`; AABBs de cápsula/convex/polyline; picking por geometría; `appliedForces` por paso; `Num` con confirmación.
+Ya está corregido (no reviertas): arrastre en pausa con `orig` de la pose viva; `bodyToDesc` unificado; cola de `reload`; guardias `freed`; AABBs de cápsula/convex/polyline; picking por geometría; `appliedForces` por paso; `Num` con confirmación; `syncWorld` incremental en undo/redo; transacciones de historial; `LabInput` separado de `LabRuntime`; edición de vértices de tanques; capas `trajectories` / `colliders` reales; asas de rotar / escalar; cinemático por velocidad (`kinematicVelocityBased`); contactos leídos por punto del manifold (no por índice del solver); `clipPolygon` acepta cualquier sentido de giro.
 
-Sigue abierto (el plan en `docs/plan-de-mejora.md`): `syncWorld` incremental en undo/redo (hoy hay `reload` completo); transacciones `history.begin/commit`; extraer `LabRuntime`; edición de polígono de regiones de fluido; capas `trajectories` / `colliders` reales; asas de rotar/escalar.
+Sigue abierto: tests para lo anterior (aplazados a propósito); orden de las uniones restauradas por undo (se añaden al final, no en su índice).
 
 ## Pruebas
 

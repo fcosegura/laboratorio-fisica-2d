@@ -8,6 +8,8 @@ describe('DataRecorder', () => {
     type: 'dynamic',
     x,
     y,
+    comX: x,
+    comY: y,
     angle: 0,
     vx,
     vy,

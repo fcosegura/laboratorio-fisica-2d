@@ -106,17 +106,19 @@ export function Toolbar() {
       <div className="my-1 h-px w-8 bg-line" />
       {(
         [
-          ['velocity', 'v'],
-          ['force', 'F'],
-          ['gravity', 'g'],
-          ['contacts', 'n'],
-          ['com', 'cm'],
+          ['velocity', 'v', 'Velocidad'],
+          ['force', 'F', 'Fuerzas aplicadas'],
+          ['gravity', 'g', 'Gravedad'],
+          ['contacts', 'n', 'Contactos (fuerza normal)'],
+          ['com', 'cm', 'Centro de masas'],
+          ['trajectories', 'tr', 'Trayectorias del centro de masas'],
+          ['colliders', 'col', 'Colisionadores reales'],
         ] as const
-      ).map(([key, label]) => (
+      ).map(([key, label, title]) => (
         <button
           key={key}
           type="button"
-          title={key}
+          title={title}
           onClick={() => useLabStore.setState({ viz: { ...viz, [key]: !viz[key] } })}
           className={`h-7 w-10 rounded text-[10px] uppercase ${
             viz[key] ? 'bg-accent/20 text-accent' : 'text-muted'

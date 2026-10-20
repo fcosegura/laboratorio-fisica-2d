@@ -18,7 +18,20 @@ import type { SceneBody, SceneDocument, VizLayers } from '../scene/document.ts'
 import { jointAnchorWorld } from '../scene/joints.ts'
 import type { AppliedForce, SimulationEngine } from '../sim/engine.ts'
 import type { InteractionState } from '../interaction/state.ts'
-import { clipHalfPlane } from '../core/math/polygon.ts'
+import {
+  moveVertex,
+  scaleFactor,
+  scaleShape,
+  vertexHandleRadius,
+  type HandleLayout,
+} from '../interaction/handles.ts'
+import {
+  capsuleToPolygon,
+  clipHalfPlane,
+  isConvex,
+  removeDuplicateVertices,
+} from '../core/math/polygon.ts'
+import { decomposePolygon } from '../core/math/decompose.ts'
 import { PHYSICS_DT } from '../core/constants.ts'
 
 const BG = 0x0c121c
@@ -30,6 +43,7 @@ const VEL = 0x7aa2ff
 const GRAV = 0xe24b8d
 const CONTACT = 0xff6b6b
 const JOINT = 0xc4b5fd
+const COLLIDER = 0xffe14d
 
 function gridStep(ppm: number): number {
   if (ppm > 40) return 1
@@ -117,6 +131,55 @@ function drawSelectionHighlight(g: Graphics, body: SceneBody): void {
   }
 }
 
+/**
+ * Collider outlines as the physics engine sees them: concave polygons split into the same
+ * convex pieces Rapier builds (`decomposePolygon`), each piece outlined separately.
+ */
+function drawColliders(
+  g: Graphics,
+  shape: SceneBody['shape'],
+  x: number,
+  y: number,
+  angle: number,
+  color = COLLIDER,
+  width = 0.025,
+): void {
+  const c = Math.cos(angle)
+  const s = Math.sin(angle)
+  const toWorld = (p: Vec2) => [x + p.x * c - p.y * s, y + p.x * s + p.y * c]
+  const style = { color, width, alpha: 0.85 }
+  if (shape.kind === 'circle') {
+    g.circle(x, y, shape.radius).stroke(style)
+    g.moveTo(x, y)
+      .lineTo(x + shape.radius * c, y + shape.radius * s)
+      .stroke(style)
+  } else if (shape.kind === 'box') {
+    const { hx, hy } = shape
+    const corners = [
+      { x: -hx, y: -hy },
+      { x: hx, y: -hy },
+      { x: hx, y: hy },
+      { x: -hx, y: hy },
+    ]
+    g.poly(corners.flatMap(toWorld)).stroke(style)
+  } else if (shape.kind === 'capsule') {
+    const outline = capsuleToPolygon(x, y, shape.halfHeight, shape.radius, angle, 12)
+    g.poly(outline.flatMap((p) => [p.x, p.y])).stroke(style)
+  } else if (shape.kind === 'convex') {
+    const verts = removeDuplicateVertices(shape.vertices)
+    if (verts.length < 3) return
+    const parts = isConvex(verts) ? [verts] : decomposePolygon(verts)
+    for (const part of parts) g.poly(part.flatMap(toWorld)).stroke(style)
+  } else if (shape.kind === 'polyline') {
+    const pts = shape.vertices.flatMap(toWorld)
+    if (pts.length >= 4) g.poly(pts, false).stroke(style)
+  } else if (shape.kind === 'segment') {
+    const [ax, ay] = toWorld(shape.a)
+    const [bx, by] = toWorld(shape.b)
+    g.moveTo(ax!, ay!).lineTo(bx!, by!).stroke(style)
+  }
+}
+
 export class PixiRenderer {
   app: Application | null = null
   world = new Container()
@@ -186,6 +249,7 @@ export class PixiRenderer {
     viz: VizLayers,
     selected: string[],
     interaction: InteractionState,
+    handles: HandleLayout | null = null,
     measureLabel?: string,
   ): void {
     const t0 = performance.now()
@@ -200,8 +264,69 @@ export class PixiRenderer {
     this.drawFluids(engine, selected)
     this.syncBodies(engine, selected)
     this.drawOverlay(engine, viz, interaction)
+    if (handles) this.drawHandles(handles, engine, interaction)
+    this.drawFluidVertices(engine, selected, interaction, cam.pixelsPerMeter)
     this.drawLabels(engine, cam, viz, interaction, measureLabel)
     this.lastDrawMs = performance.now() - t0
+  }
+
+  /** Vertex handles of the selected tank, and the outline being edited. */
+  private drawFluidVertices(
+    engine: SimulationEngine,
+    selected: string[],
+    interaction: InteractionState,
+    pixelsPerMeter: number,
+  ): void {
+    const g = this.overlay
+    const r = vertexHandleRadius(pixelsPerMeter)
+    for (const region of engine.doc.fluidRegions) {
+      if (!selected.includes(region.id)) continue
+      const editing = interaction.kind === 'editingVertex' && interaction.regionId === region.id
+      const poly = editing
+        ? moveVertex(region.polygon, interaction.index, interaction.current)
+        : region.polygon
+      if (editing) {
+        g.poly(poly.flatMap((p) => [p.x, p.y])).stroke({ color: SELECT, width: r * 0.4 })
+      }
+      for (const p of poly) {
+        g.circle(p.x, p.y, r)
+          .fill({ color: BG, alpha: 0.9 })
+          .stroke({ color: SELECT, width: r * 0.35 })
+      }
+    }
+  }
+
+  /** Rotate (circle on a stem) and scale (square) handles, plus the live scale preview. */
+  private drawHandles(
+    h: HandleLayout,
+    engine: SimulationEngine,
+    interaction: InteractionState,
+  ): void {
+    const g = this.overlay
+    const w = h.radius * 0.35
+    g.moveTo(h.center.x, h.center.y)
+      .lineTo(h.rotate.x, h.rotate.y)
+      .stroke({ color: SELECT, width: w, alpha: 0.5 })
+    g.circle(h.rotate.x, h.rotate.y, h.radius)
+      .fill({ color: BG, alpha: 0.9 })
+      .stroke({ color: SELECT, width: w })
+    g.rect(h.scale.x - h.radius, h.scale.y - h.radius, h.radius * 2, h.radius * 2)
+      .fill({ color: BG, alpha: 0.9 })
+      .stroke({ color: SELECT, width: w })
+
+    if (interaction.kind === 'scaling' && interaction.bodyId === h.bodyId) {
+      const body = engine.doc.bodies.find((b) => b.id === h.bodyId)
+      const pose = engine.interpolated(h.bodyId) ?? body
+      if (body && pose) {
+        const k = scaleFactor(
+          body.shape,
+          interaction.center,
+          interaction.start,
+          interaction.current,
+        )
+        drawColliders(g, scaleShape(body.shape, k), pose.x, pose.y, pose.angle, SELECT, w * 1.5)
+      }
+    }
   }
 
   private drawGrid(cam: Camera): void {
@@ -352,20 +477,33 @@ export class PixiRenderer {
     const gy = engine.doc.world.gravity.y
     const gx = engine.doc.world.gravity.x
 
+    if (viz.trajectories) {
+      for (const [id, trail] of engine.trails) {
+        if (trail.length < 4) continue
+        const body = engine.doc.bodies.find((b) => b.id === id)
+        if (!body) continue
+        g.moveTo(trail[0]!, trail[1]!)
+        for (let i = 2; i < trail.length; i += 2) g.lineTo(trail[i]!, trail[i + 1]!)
+        g.stroke({ color: lightenColor(bodyColor(body), 0.35), width: 0.03, alpha: 0.7 })
+      }
+    }
+
+    // COM, velocity and gravity live at the centre of mass (vx/vy are COM velocities);
+    // the body origin differs from it for asymmetric shapes.
     for (const body of engine.doc.bodies) {
       const snap = engine.interpolated(body.id)
       if (!snap) continue
       if (viz.com) {
-        g.circle(snap.x, snap.y, 0.06).fill({ color: 0xffffff, alpha: 0.9 })
+        g.circle(snap.comX, snap.comY, 0.06).fill({ color: 0xffffff, alpha: 0.9 })
       }
       if (viz.velocity) {
-        this.arrow(g, snap.x, snap.y, snap.vx * 0.15, snap.vy * 0.15, VEL)
+        this.arrow(g, snap.comX, snap.comY, snap.vx * 0.15, snap.vy * 0.15, VEL)
       }
       if (viz.gravity && body.type === 'dynamic' && body.gravityScale !== 0) {
         this.arrow(
           g,
-          snap.x,
-          snap.y,
+          snap.comX,
+          snap.comY,
           gx * 0.05 * body.gravityScale,
           gy * 0.05 * body.gravityScale,
           GRAV,
@@ -384,9 +522,8 @@ export class PixiRenderer {
 
     if (viz.colliders) {
       for (const body of engine.doc.bodies) {
-        const snap = engine.interpolated(body.id)
-        if (!snap) continue
-        g.circle(snap.x, snap.y, 0.03).stroke({ color: 0xffff00, width: 0.02, alpha: 0.5 })
+        const pose = engine.interpolated(body.id) ?? body
+        drawColliders(g, body.shape, pose.x, pose.y, pose.angle)
       }
     }
 

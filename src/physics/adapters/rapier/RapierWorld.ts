@@ -25,7 +25,8 @@ import type { RapierModule } from './loadRapier.ts'
 
 function toRapierType(R: RapierModule, type: BodyType) {
   if (type === 'fixed') return R.RigidBodyDesc.fixed()
-  if (type === 'kinematic') return R.RigidBodyDesc.kinematicPositionBased()
+  // Velocity-based: an authored vx/vy/ω moves the body. Position-based ignores velocity.
+  if (type === 'kinematic') return R.RigidBodyDesc.kinematicVelocityBased()
   return R.RigidBodyDesc.dynamic()
 }
 
@@ -207,10 +208,13 @@ export class RapierWorld implements PhysicsWorld {
   private snapshotOf(id: BodyId, body: RigidBody): BodySnapshot {
     const t = body.translation()
     const v = body.linvel()
+    const com = body.worldCom()
     return {
       id,
       x: t.x,
       y: t.y,
+      comX: com.x,
+      comY: com.y,
       angle: body.rotation(),
       vx: v.x,
       vy: v.y,
@@ -253,7 +257,7 @@ export class RapierWorld implements PhysicsWorld {
       type === 'fixed'
         ? R.RigidBodyType.Fixed
         : type === 'kinematic'
-          ? R.RigidBodyType.KinematicPositionBased
+          ? R.RigidBodyType.KinematicVelocityBased
           : R.RigidBodyType.Dynamic
     body.setBodyType(mapped, true)
   }
@@ -341,14 +345,26 @@ export class RapierWorld implements PhysicsWorld {
           if (seen.has(key)) return
           seen.add(key)
           this.world.contactPair(c, other, (manifold, flipped) => {
-            const n = manifold.numSolverContacts()
-            if (n <= 0) return
+            if (manifold.numSolverContacts() <= 0) return
             const normal = manifold.normal()
             const nx = flipped ? -normal.x : normal.x
             const ny = flipped ? -normal.y : normal.y
+            // Iterate manifold points, not solver contacts: contactDist / contactImpulse are
+            // indexed by manifold point, and solver contacts are only a subset of them.
+            // Point 1 lives in the local frame of the manifold's first shape.
+            const shape1 = flipped ? other : c
+            const t = shape1.translation()
+            const rot = shape1.rotation()
+            const cos = Math.cos(rot)
+            const sin = Math.sin(rot)
+            const n = manifold.numContacts()
             for (let i = 0; i < n; i++) {
-              const p = manifold.solverContactPoint(i)
-              if (!p) continue
+              const dist = manifold.contactDist(i)
+              const impulseN = manifold.contactImpulse(i)
+              if (dist > 0 && impulseN <= 0) continue
+              const lp = manifold.localContactPoint1(i)
+              if (!lp) continue
+              const p = { x: t.x + lp.x * cos - lp.y * sin, y: t.y + lp.x * sin + lp.y * cos }
               out.push({
                 bodyA: id,
                 bodyB: otherId,
@@ -358,8 +374,8 @@ export class RapierWorld implements PhysicsWorld {
                 y: p.y,
                 nx,
                 ny,
-                depth: Math.max(0, -manifold.contactDist(i)),
-                impulseN: manifold.contactImpulse(i),
+                depth: Math.max(0, -dist),
+                impulseN,
                 impulseT: manifold.contactTangentImpulse(i),
               })
             }

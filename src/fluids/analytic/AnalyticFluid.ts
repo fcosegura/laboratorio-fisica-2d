@@ -116,7 +116,25 @@ export function restPlaneD(
   return sMin + fillFrac * (sMax - sMin)
 }
 
-/** Quadratic + linear drag: F_d = −½ Cd ρ A_proj |v| v − b(μ,L) v. */
+/** Inertia + step for a stable damping step; without it the force is the raw explicit value. */
+export type DampingLimit = {
+  /** kg (linear) or kg·m² (angular). */
+  inertia: number
+  dt: number
+}
+
+/**
+ * Explicit damping F = −c v gives v' = v (1 − x), x = c dt / m: past x = 1 a light, fast body
+ * reverses, past 2 it gains energy. Capping c at m / dt makes the worst case "stops in one
+ * step". Below the cap it is the explicit force unchanged — the SPH and tank tunings were
+ * calibrated against it, and the floating-box rest is sensitive to ~0.3 % per step.
+ */
+export function stableDamping(c: number, limit?: DampingLimit): number {
+  if (!limit || !(limit.inertia > 0) || !(limit.dt > 0)) return c
+  return Math.min(c, limit.inertia / limit.dt)
+}
+
+/** Quadratic + linear drag: F_d = −½ Cd ρ A_proj |v| v − b(μ,L) v (stable with `limit`). */
 export function fluidDragForce(
   vx: number,
   vy: number,
@@ -124,6 +142,7 @@ export function fluidDragForce(
   viscosity: number,
   submerged: readonly Vec2[],
   area: number,
+  limit?: DampingLimit,
   cd = DEFAULT_DRAG_CD,
 ): Vec2 {
   const speed = Math.hypot(vx, vy)
@@ -135,14 +154,19 @@ export function fluidDragForce(
     aProj = projectedSpan(submerged, -vy / speed, vx / speed)
     if (aProj < 1e-8) aProj = L
   }
-  const scale = 0.5 * cd * density * aProj * speed + b
+  const scale = stableDamping(0.5 * cd * density * aProj * speed + b, limit)
   return { x: -scale * vx, y: -scale * vy }
 }
 
-/** Viscous/angular fluid torque: τ = −c ρ A R² ω, R² := A. */
-export function fluidTorqueDamp(density: number, area: number, omega: number): number {
+/** Viscous/angular fluid torque: τ = −c ρ A R² ω, R² := A (stable with `limit`). */
+export function fluidTorqueDamp(
+  density: number,
+  area: number,
+  omega: number,
+  limit?: DampingLimit,
+): number {
   const r2 = Math.max(area, 0)
-  return -TORQUE_DRAG_C * density * area * r2 * omega
+  return -stableDamping(TORQUE_DRAG_C * density * area * r2, limit) * omega
 }
 
 export class AnalyticFluidSolver {
@@ -219,8 +243,12 @@ export class AnalyticFluidSolver {
           mat.viscosity,
           clipped,
           area,
+          { inertia: item.snap.mass, dt: world.dt },
         )
-        const torqueDamp = fluidTorqueDamp(mat.density, area, item.snap.omega)
+        const torqueDamp = fluidTorqueDamp(mat.density, area, item.snap.omega, {
+          inertia: item.snap.inertia,
+          dt: world.dt,
+        })
         world.applyForce(item.body.id, fx + drag.x, fy + drag.y, c)
         world.applyTorque(item.body.id, torqueDamp)
         this.debug.push({

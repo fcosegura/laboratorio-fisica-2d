@@ -88,7 +88,7 @@ export class DataRecorder {
     return [...this.tracks.keys()]
   }
 
-  /** Datum of PE is the origin: PE = −m g · r. */
+  /** Datum of PE is the world origin: PE = −m g · r_com. */
   sample(time: number, dt: number, gravity: Vec2, bodies: Iterable<BodySnapshot>): void {
     this.tick++
     if (this.tick % this.sampleEvery !== 0) return
@@ -103,11 +103,13 @@ export class DataRecorder {
       const kinetic =
         0.5 * body.mass * (body.vx * body.vx + body.vy * body.vy) +
         0.5 * body.inertia * body.omega * body.omega
-      const potential = -body.mass * (gravity.x * body.x + gravity.y * body.y)
+      // Centre of mass, not the body origin: vx/vy are COM velocities, and Ep of a
+      // rotating asymmetric body only stays consistent at the COM.
+      const potential = -body.mass * (gravity.x * body.comX + gravity.y * body.comY)
       const push = (ch: RecorderChannel, v: number) => track.buffers[ch].push(v)
       push('time', time)
-      push('x', body.x)
-      push('y', body.y)
+      push('x', body.comX)
+      push('y', body.comY)
       push('vx', body.vx)
       push('vy', body.vy)
       push('ax', ax)

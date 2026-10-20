@@ -22,6 +22,7 @@ export function Inspector() {
   const fluid = useLabStore((s) => s.selectedFluidRegion)
   const fluidOptions = useLabStore((s) => s.fluidRegionOptions)
   const fluidOverlap = useLabStore((s) => s.fluidOverlapWarning)
+  const notice = useLabStore((s) => s.notice)
   const joints = useLabStore((s) => s.selectedJoints)
   const live = useLabStore((s) => s.live)
   const open = useLabStore((s) => s.inspectorOpen)
@@ -34,6 +35,7 @@ export function Inspector() {
     <aside className="w-72 shrink-0 overflow-y-auto border-l border-line bg-panel p-3 text-sm">
       <div className="mb-3 text-xs uppercase tracking-wide text-muted">Inspector</div>
       {fluidOverlap && <p className="mb-3 text-[11px] text-muted">{fluidOverlap}</p>}
+      {notice && <p className="mb-3 text-[11px] text-amber-300">{notice}</p>}
       {!body && !fluid && (
         <div className="flex flex-col gap-3">
           <p className="text-muted">Selecciona un objeto o una región de fluido.</p>
@@ -158,7 +160,12 @@ export function Inspector() {
               className="field"
               value={body.materialId}
               onChange={(e) => {
-                lab.commitPatch(body.id, applySolidPreset(e.target.value, body))
+                // Keep the body's damping: it is air drag, not a material property.
+                lab.commitPatch(body.id, {
+                  ...applySolidPreset(e.target.value, body),
+                  linearDamping: body.linearDamping,
+                  angularDamping: body.angularDamping,
+                })
               }}
             >
               {SOLID_MATERIALS.map((m) => (

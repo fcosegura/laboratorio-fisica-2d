@@ -104,8 +104,12 @@ export type PhysicsContact = {
 
 export type BodySnapshot = {
   id: BodyId
+  /** Body origin (frame of the collider vertices), not the centre of mass. */
   x: number
   y: number
+  /** World-space centre of mass; `vx`/`vy` are the velocity of this point. */
+  comX: number
+  comY: number
   angle: number
   vx: number
   vy: number

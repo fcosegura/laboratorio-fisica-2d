@@ -1,22 +1,12 @@
 import { IdFactory } from '../core/ids.ts'
-import { aabbFromShape, intersectsAABB, type AABB } from '../core/math/aabb.ts'
-import { dist } from '../core/math/vec2.ts'
-import type { Vec2 } from '../core/math/vec2.ts'
-import { inverseTransformPoint, transformPoint } from '../core/math/transform.ts'
-import { dragToForce, dragToImpulse, forceAnchorWorld } from '../interaction/force.ts'
-import { applySolidPreset } from '../materials/applyPreset.ts'
-import { getFluid, DEFAULT_FLUID } from '../materials/catalog.ts'
-import { createCamera, screenToWorld, zoomAt, zoomToFit, type Camera } from '../camera/coords.ts'
-import type { Tool } from '../interaction/tools.ts'
-import { Tool as ToolId } from '../interaction/tools.ts'
-import type { InteractionState } from '../interaction/state.ts'
-import { reduceDown } from '../interaction/machine.ts'
+import { createCamera, zoomToFit, type Camera } from '../camera/coords.ts'
+import { handleLayout, type HandleLayout } from '../interaction/handles.ts'
 import type { KinematicPose } from '../interaction/machine.ts'
+import type { InteractionState } from '../interaction/state.ts'
+import type { Tool } from '../interaction/tools.ts'
 import { PixiRenderer } from '../render/PixiRenderer.ts'
 import {
   AddBodyCommand,
-  AddFluidCommand,
-  AddFluidVolumeCommand,
   AddJointCommand,
   BatchCommand,
   DuplicateBodyCommand,
@@ -42,14 +32,12 @@ import {
   type VizLayers,
 } from '../scene/document.ts'
 import { bodyToDesc } from '../scene/builder.ts'
-import { jointToDesc, reattachJoints, springParamsForMasses } from '../scene/joints.ts'
+import { jointToDesc } from '../scene/joints.ts'
 import { fluidOverlapWarning } from '../scene/fluidOverlap.ts'
-import { pickFluidRegion } from '../scene/picking.ts'
 import { parseDocument, serializeDocument } from '../scene/schema.ts'
 import { SimulationEngine } from '../sim/engine.ts'
+import { LabInput } from './LabInput.ts'
 import type { GraphChannel, LabStore } from './store.ts'
-
-const MIN_FORCE_DRAG = 0.04
 
 export class LabRuntime {
   engine: SimulationEngine
@@ -64,9 +52,9 @@ export class LabRuntime {
   canvas: HTMLCanvasElement | null = null
   private raf = 0
   private lastT = 0
-  private pointers = new Map<number, { x: number; y: number }>()
-  private pinch: { dist: number; ppm: number } | null = null
-  private store: LabStore | null = null
+
+  store: LabStore | null = null
+  readonly input: LabInput = new LabInput(this)
   private uiAcc = 0
   private unbind: (() => void) | null = null
   /** Bumped on dispose so an in-flight `mount()` cannot start a second loop. */
@@ -102,7 +90,8 @@ export class LabRuntime {
     if (session !== this.session) {
       return
     }
-    this.bind(canvas)
+    this.unbind?.()
+    this.unbind = this.input.bind(canvas)
     this.resize()
     this.lastT = performance.now()
     const loop = (t: number) => {
@@ -112,13 +101,14 @@ export class LabRuntime {
       const t0 = performance.now()
       try {
         this.engine.advance(dt)
-        this.applySustainedForce()
+        this.input.applySustainedForce()
         this.renderer.draw(
           this.engine,
           this.camera,
           this.store?.getState().viz ?? this.engine.doc.visualization,
           this.selectedFluidId ? [...this.selected, this.selectedFluidId] : this.selected,
           this.state,
+          this.handles(),
         )
       } catch (err) {
         console.error(err)
@@ -147,43 +137,6 @@ export class LabRuntime {
     this.canvas = null
   }
 
-  private bind(canvas: HTMLCanvasElement): void {
-    this.unbind?.()
-    canvas.style.touchAction = 'none'
-    const onPointer = (e: PointerEvent) => this.onPointer(e)
-    const onWheel = (e: WheelEvent) => this.onWheel(e)
-    const onContext = (e: Event) => e.preventDefault()
-    const onDbl = (e: MouseEvent) => this.onDblClick(e)
-    const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e)
-    const onKeyUp = (e: KeyboardEvent) => this.onKeyUp(e)
-    const onResize = () => this.resize()
-    canvas.addEventListener('pointerdown', onPointer)
-    canvas.addEventListener('pointermove', onPointer)
-    canvas.addEventListener('pointerup', onPointer)
-    canvas.addEventListener('pointercancel', onPointer)
-    canvas.addEventListener('wheel', onWheel, { passive: false })
-    canvas.addEventListener('contextmenu', onContext)
-    canvas.addEventListener('dblclick', onDbl)
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
-    window.addEventListener('resize', onResize)
-    const ro = new ResizeObserver(() => this.resize())
-    ro.observe(canvas.parentElement ?? canvas)
-    this.unbind = () => {
-      canvas.removeEventListener('pointerdown', onPointer)
-      canvas.removeEventListener('pointermove', onPointer)
-      canvas.removeEventListener('pointerup', onPointer)
-      canvas.removeEventListener('pointercancel', onPointer)
-      canvas.removeEventListener('wheel', onWheel)
-      canvas.removeEventListener('contextmenu', onContext)
-      canvas.removeEventListener('dblclick', onDbl)
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('keyup', onKeyUp)
-      window.removeEventListener('resize', onResize)
-      ro.disconnect()
-    }
-  }
-
   resize(): void {
     if (!this.canvas) return
     const parent = this.canvas.parentElement
@@ -192,279 +145,27 @@ export class LabRuntime {
     this.renderer.resize(w, h)
   }
 
-  private view() {
+  view() {
     return this.renderer.view
   }
 
-  private worldOf(e: PointerEvent | MouseEvent): Vec2 {
-    const rect = this.canvas!.getBoundingClientRect()
-    return screenToWorld(
-      { x: e.clientX - rect.left, y: e.clientY - rect.top },
-      this.camera,
-      this.view(),
-    )
-  }
-
-  private screenOf(e: PointerEvent | MouseEvent): Vec2 {
-    const rect = this.canvas!.getBoundingClientRect()
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
-  }
-
-  private tool(): Tool {
+  tool(): Tool {
     return this.store?.getState().tool ?? 'select'
   }
 
-  private onWheel(e: WheelEvent): void {
-    e.preventDefault()
-    const rect = this.canvas!.getBoundingClientRect()
-    const screen = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-    const factor = e.deltaY > 0 ? 0.9 : 1.1
-    this.camera = zoomAt(this.camera, screen, this.view(), factor)
+  /** Rotate / scale handles: one selected body, select tool, paused (authoring only). */
+  handles(): HandleLayout | null {
+    if (this.selected.length !== 1 || this.tool() !== 'select' || this.engine.clock.playing) {
+      return null
+    }
+    const id = this.selected[0]!
+    const body = this.engine.doc.bodies.find((b) => b.id === id)
+    if (!body) return null
+    return handleLayout(id, body.shape, this.poseOf(id), this.camera.pixelsPerMeter)
   }
 
-  private onPointer(e: PointerEvent): void {
-    if (!this.canvas) return
-    const world = this.worldOf(e)
-    const screen = this.screenOf(e)
-
-    if (e.type === 'pointerdown') {
-      this.canvas.setPointerCapture(e.pointerId)
-      this.pointers.set(e.pointerId, screen)
-      if (this.pointers.size === 2) {
-        const pts = [...this.pointers.values()]
-        this.pinch = {
-          dist: Math.hypot(pts[0]!.x - pts[1]!.x, pts[0]!.y - pts[1]!.y),
-          ppm: this.camera.pixelsPerMeter,
-        }
-        this.state = { kind: 'idle' }
-        this.engine.persistentForces = []
-        return
-      }
-      this.onDown(e, world, screen)
-    } else if (e.type === 'pointermove') {
-      if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, screen)
-      if (this.pointers.size === 2 && this.pinch) {
-        const pts = [...this.pointers.values()]
-        const mid = { x: (pts[0]!.x + pts[1]!.x) / 2, y: (pts[0]!.y + pts[1]!.y) / 2 }
-        const d = Math.hypot(pts[0]!.x - pts[1]!.x, pts[0]!.y - pts[1]!.y)
-        const factor = d / (this.pinch.dist || 1)
-        this.camera = zoomAt(
-          { ...this.camera, pixelsPerMeter: this.pinch.ppm },
-          mid,
-          this.view(),
-          factor,
-        )
-        return
-      }
-      this.onMove(e, world, screen)
-    } else {
-      this.pointers.delete(e.pointerId)
-      if (this.pointers.size < 2) this.pinch = null
-      this.onUp(e, world)
-    }
-  }
-
-  private onDown(e: PointerEvent, world: Vec2, screen: Vec2): void {
-    const hit = this.engine.bodyAt(world.x, world.y)
-    const hitDynamic = this.hitDynamic(world.x, world.y)
-    const res = reduceDown(this.state, {
-      tool: this.tool(),
-      world,
-      screen,
-      hit,
-      hitDynamic,
-      shiftKey: e.shiftKey,
-      button: e.button,
-      spaceHeld: this.store?.getState().spaceHeld,
-      camera: { x: this.camera.x, y: this.camera.y },
-      poseOf: (id) => this.poseOf(id),
-      bodyOf: (id) => this.engine.doc.bodies.find((b) => b.id === id),
-    })
-
-    this.state = res.state
-    if (res.selected !== undefined) {
-      if (e.shiftKey && this.tool() === 'select' && res.selected.length) {
-        this.selected = [...new Set([...this.selected, ...res.selected])]
-      } else {
-        this.selected = res.selected
-      }
-      if (res.selected.length) this.selectedFluidId = null
-    }
-
-    // Select tool miss on bodies: try fluid region before marquee.
-    if (
-      this.tool() === 'select' &&
-      !hit &&
-      e.button === 0 &&
-      !this.store?.getState().spaceHeld &&
-      this.state.kind === 'selecting'
-    ) {
-      const fluidId = pickFluidRegion(this.engine.doc.fluidRegions, world.x, world.y)
-      if (fluidId) {
-        this.selected = []
-        this.selectedFluidId = fluidId
-        this.state = { kind: 'idle' }
-        this.pushUi()
-        return
-      }
-      this.selectedFluidId = null
-    }
-
-    if (res.ensurePlaying) this.ensurePlaying()
-    if (res.pushUi) this.pushUi()
-  }
-
-  private onMove(_e: PointerEvent, world: Vec2, screen: Vec2): void {
-    const s = this.state
-    if (s.kind === 'panning') {
-      this.camera = {
-        x: s.origX - (screen.x - s.startScreen.x) / this.camera.pixelsPerMeter,
-        y: s.origY + (screen.y - s.startScreen.y) / this.camera.pixelsPerMeter,
-        pixelsPerMeter: this.camera.pixelsPerMeter,
-      }
-      return
-    }
-    if (s.kind === 'dragging') {
-      const x = world.x - s.local.x
-      const y = world.y - s.local.y
-      if (this.engine.clock.playing) {
-        const snap = this.engine.curr.find((b) => b.id === s.bodyId)
-        if (snap) {
-          const k = Math.max(20, snap.mass * 8)
-          this.engine.persistentForces = [
-            { bodyId: s.bodyId, x: snap.x, y: snap.y, fx: (x - snap.x) * k, fy: (y - snap.y) * k },
-          ]
-        }
-      } else {
-        this.engine.world?.setTransform(s.bodyId, x, y, s.orig.angle)
-        this.engine.syncBodies()
-      }
-      return
-    }
-    if (s.kind === 'creating') {
-      this.state = { ...s, current: world }
-      return
-    }
-    if (s.kind === 'applyingForce') {
-      this.state = { ...s, current: world }
-      if (s.mode === 'force') this.applySustainedForce()
-      return
-    }
-    if (s.kind === 'measuring' || s.kind === 'selecting') {
-      this.state = { ...s, current: world }
-      return
-    }
-    if (s.kind === 'joining') {
-      this.state = { ...s, current: world }
-    }
-  }
-
-  private bodyBounds(b: SceneBody): AABB {
-    const pose = this.poseOf(b.id)
-    return aabbFromShape(b.shape, pose)
-  }
-
-  private onUp(_e: PointerEvent, world: Vec2): void {
-    const s = this.state
-    if (s.kind === 'selecting') {
-      const minX = Math.min(s.start.x, world.x)
-      const maxX = Math.max(s.start.x, world.x)
-      const minY = Math.min(s.start.y, world.y)
-      const maxY = Math.max(s.start.y, world.y)
-      const selectBox: AABB = { minX, maxX, minY, maxY }
-      const found: string[] = []
-      for (const b of this.engine.doc.bodies) {
-        const box = this.bodyBounds(b)
-        if (intersectsAABB(selectBox, box)) {
-          found.push(b.id)
-        }
-      }
-      this.selected = found
-      this.state = { kind: 'idle' }
-      this.selectedFluidId = null
-      this.pushUi()
-      return
-    }
-    if (s.kind === 'creating') {
-      if (s.tool === 'polygon') {
-        return
-      }
-      this.commitCreate(s.tool, s.start, world, s.points)
-      this.state = { kind: 'idle' }
-      return
-    }
-    if (s.kind === 'applyingForce') {
-      const origin = forceAnchorWorld(s.local, this.poseOf(s.bodyId))
-      const dx = s.current.x - origin.x
-      const dy = s.current.y - origin.y
-      if (s.mode === 'impulse' && Math.hypot(dx, dy) >= MIN_FORCE_DRAG) {
-        const mass = this.bodyMass(s.bodyId)
-        const j = dragToImpulse(mass, dx, dy)
-        this.engine.world?.wake(s.bodyId)
-        this.engine.applyImpulse(s.bodyId, j.x, j.y, origin)
-        this.ensurePlaying()
-      }
-      this.engine.persistentForces = []
-    }
-    if (s.kind === 'dragging') {
-      this.engine.persistentForces = []
-      if (!this.engine.clock.playing) {
-        const body = this.engine.doc.bodies.find((b) => b.id === s.bodyId)
-        if (body) {
-          const finalX = world.x - s.local.x
-          const finalY = world.y - s.local.y
-          this.history.apply(
-            new UpdateBodyCommand(
-              s.bodyId,
-              { x: finalX, y: finalY, vx: s.orig.vx, vy: s.orig.vy, omega: s.orig.omega },
-              { x: s.orig.x, y: s.orig.y, vx: s.orig.vx, vy: s.orig.vy, omega: s.orig.omega },
-            ),
-          )
-        }
-      }
-    }
-    if (s.kind === 'joining') {
-      this.commitJoin(s, world)
-    }
-    this.state = { kind: 'idle' }
-  }
-
-  private onDblClick(e: MouseEvent): void {
-    if (this.tool() === 'polygon' && this.state.kind === 'creating') {
-      const { start, points } = this.state
-      this.state = { kind: 'idle' }
-      const cleanPoints = (points ?? []).filter((p, i, arr) => {
-        if (i === 0) return true
-        const prev = arr[i - 1]!
-        return Math.hypot(p.x - prev.x, p.y - prev.y) > 0.05
-      })
-      this.commitCreate('polygon', start, this.worldOf(e), cleanPoints)
-    }
-  }
-
-  private applySustainedForce(): void {
-    if (this.state.kind !== 'applyingForce' || this.state.mode !== 'force') return
-    const s = this.state
-    const origin = forceAnchorWorld(s.local, this.poseOf(s.bodyId))
-    const dx = s.current.x - origin.x
-    const dy = s.current.y - origin.y
-    const mass = this.bodyMass(s.bodyId)
-    const f = dragToForce(mass, dx, dy)
-    this.engine.world?.wake(s.bodyId)
-    this.engine.persistentForces = [
-      { bodyId: s.bodyId, x: origin.x, y: origin.y, fx: f.x, fy: f.y },
-    ]
-  }
-
-  private hitDynamic(x: number, y: number): string | null {
-    return this.engine.bodyAt(x, y, (id, body) => {
-      if (body) return body.type === 'dynamic'
-      const live = this.engine.world?.getBody(id)?.type
-      return live === 'dynamic'
-    })
-  }
-
-  private poseOf(id: string): KinematicPose {
+  /** Live pose (interpolated snapshot), falling back to authorship. */
+  poseOf(id: string): KinematicPose {
     const snap = this.engine.interpolated(id)
     if (snap)
       return {
@@ -486,133 +187,16 @@ export class LabRuntime {
     }
   }
 
-  private bodyMass(id: string): number {
+  bodyMass(id: string): number {
     return (
       this.engine.world?.getBody(id)?.mass ?? this.engine.curr.find((b) => b.id === id)?.mass ?? 1
     )
   }
 
-  private ensurePlaying(): void {
+  ensurePlaying(): void {
     if (this.engine.clock.playing) return
     this.engine.play()
     this.pushUi()
-  }
-
-  private commitCreate(tool: Tool, a: Vec2, b: Vec2, points?: Vec2[]): void {
-    const matId = this.store?.getState().materialId ?? 'wood'
-    const id = this.ids.next('body')
-    if (tool === 'circle') {
-      const r = Math.max(0.08, dist(a, b))
-      this.addBody(this.makeBody(id, 'Círculo', a.x, a.y, { kind: 'circle', radius: r }, matId))
-    } else if (tool === 'rect') {
-      const hx = Math.max(0.08, Math.abs(b.x - a.x) / 2)
-      const hy = Math.max(0.08, Math.abs(b.y - a.y) / 2)
-      const cx = (a.x + b.x) / 2
-      const cy = (a.y + b.y) / 2
-      this.addBody(this.makeBody(id, 'Rectángulo', cx, cy, { kind: 'box', hx, hy }, matId))
-    } else if (tool === 'line') {
-      const cx = (a.x + b.x) / 2
-      const cy = (a.y + b.y) / 2
-      const len = Math.max(0.2, dist(a, b))
-      const angle = Math.atan2(b.y - a.y, b.x - a.x)
-      this.addBody(
-        this.makeBody(id, 'Plataforma', cx, cy, { kind: 'box', hx: len / 2, hy: 0.08 }, 'stone', {
-          type: 'fixed',
-          angle,
-          locked: true,
-          lockRotation: true,
-        }),
-      )
-    } else if (tool === 'polygon' && points && points.length >= 3) {
-      const cx = points.reduce((s, p) => s + p.x, 0) / points.length
-      const cy = points.reduce((s, p) => s + p.y, 0) / points.length
-      const verts = points.map((p) => ({ x: p.x - cx, y: p.y - cy }))
-      this.addBody(
-        this.makeBody(id, 'Polígono', cx, cy, { kind: 'convex', vertices: verts }, matId),
-      )
-    } else if (tool === 'fluid') {
-      const minX = Math.min(a.x, b.x)
-      const maxX = Math.max(a.x, b.x)
-      const minY = Math.min(a.y, b.y)
-      const maxY = Math.max(a.y, b.y)
-      if (maxX - minX < 0.2 || maxY - minY < 0.2) return
-      const fluidMatId = this.store?.getState().fluidMaterialId ?? DEFAULT_FLUID
-      const fluid = getFluid(fluidMatId)
-      const regionId = this.ids.next('fluid')
-      this.history.apply(
-        new AddFluidCommand({
-          id: regionId,
-          name: fluid.name,
-          polygon: [
-            { x: minX, y: minY },
-            { x: maxX, y: minY },
-            { x: maxX, y: maxY },
-            { x: minX, y: maxY },
-          ],
-          restSurfaceY: maxY,
-          materialId: fluid.id,
-        }),
-      )
-      this.selected = []
-      this.selectedFluidId = regionId
-      this.pushUi()
-    } else if (tool === 'spill') {
-      const minX = Math.min(a.x, b.x)
-      const maxX = Math.max(a.x, b.x)
-      const minY = Math.min(a.y, b.y)
-      const maxY = Math.max(a.y, b.y)
-      if (maxX - minX < 0.2 || maxY - minY < 0.2) return
-      const fluidMatId = this.store?.getState().fluidMaterialId ?? DEFAULT_FLUID
-      const fluid = getFluid(fluidMatId)
-      this.history.apply(
-        new AddFluidVolumeCommand({
-          id: this.ids.next('fluid'),
-          name: `${fluid.name} libre`,
-          polygon: [
-            { x: minX, y: minY },
-            { x: maxX, y: minY },
-            { x: maxX, y: maxY },
-            { x: minX, y: maxY },
-          ],
-          materialId: fluid.id,
-          spacing: 0.1,
-        }),
-      )
-      this.engine.doc.visualization.fluidParticles = true
-      // Append only the new volume — do not reseeds existing pools (that looked like an explosion).
-      const created = this.engine.doc.fluidVolumes[this.engine.doc.fluidVolumes.length - 1]
-      if (created) this.engine.particles.addVolume(created, this.engine.world)
-      this.pushUi()
-    }
-  }
-
-  private makeBody(
-    id: string,
-    name: string,
-    x: number,
-    y: number,
-    shape: SceneBody['shape'],
-    materialId: string,
-    extra: Partial<SceneBody> = {},
-  ): SceneBody {
-    return {
-      id,
-      name,
-      type: extra.type ?? 'dynamic',
-      x,
-      y,
-      angle: extra.angle ?? 0,
-      vx: 0,
-      vy: 0,
-      omega: 0,
-      gravityScale: 1,
-      ccd: true,
-      locked: extra.locked ?? false,
-      lockRotation: extra.lockRotation ?? false,
-      ...applySolidPreset(materialId),
-      ...extra,
-      shape,
-    }
   }
 
   addBody(body: SceneBody): void {
@@ -627,56 +211,9 @@ export class LabRuntime {
   commitPatch(id: string, patch: Partial<SceneBody>): void {
     this.history.apply(new UpdateBodyCommand(id, patch))
     const body = this.engine.doc.bodies.find((b) => b.id === id)
-    if (!body || !this.engine.world) return
-    const rebuildKeys: (keyof SceneBody)[] = [
-      'density',
-      'mass',
-      'massMode',
-      'friction',
-      'restitution',
-      'shape',
-      'materialId',
-      'linearDamping',
-      'angularDamping',
-      'ccd',
-      'lockRotation',
-      'locked',
-    ]
-    if (rebuildKeys.some((k) => k in patch)) {
-      const live = this.engine.world.getBody(id)
-      this.engine.world.removeBody(id)
-      const desc = bodyToDesc(body)
-      if (live) {
-        desc.translation = { x: live.x, y: live.y }
-        desc.rotation = live.angle
-        desc.linvel = { x: live.vx, y: live.vy }
-        desc.angvel = live.omega
-      }
-      this.engine.world.addBody(desc)
-      reattachJoints(this.engine.world, this.engine.doc, id)
-      this.engine.syncBodies()
-    } else {
-      const live = this.engine.world.getBody(id)
-      if (patch.x !== undefined || patch.y !== undefined || patch.angle !== undefined) {
-        this.engine.world.setTransform(
-          id,
-          patch.x ?? live?.x ?? body.x,
-          patch.y ?? live?.y ?? body.y,
-          patch.angle ?? live?.angle ?? body.angle,
-        )
-      }
-      if (patch.vx !== undefined || patch.vy !== undefined || patch.omega !== undefined) {
-        this.engine.world.setVelocity(
-          id,
-          patch.vx ?? live?.vx ?? body.vx,
-          patch.vy ?? live?.vy ?? body.vy,
-          patch.omega ?? live?.omega ?? body.omega,
-        )
-      }
-      if (patch.gravityScale !== undefined) this.engine.world.setGravityScale(id, body.gravityScale)
-      if (patch.type !== undefined) this.engine.world.setBodyType(id, body.type)
-      this.engine.syncBodies()
-    }
+    if (!body) return
+    this.engine.applyBodyChange(body, Object.keys(patch) as (keyof SceneBody)[])
+    this.engine.syncBodies()
     this.pushUi()
   }
 
@@ -696,23 +233,23 @@ export class LabRuntime {
     this.pushUi()
   }
 
+  /** Selected fluid region and bodies go in one transaction: a single Ctrl+Z restores all. */
   deleteSelected(): void {
+    if (!this.selectedFluidId && !this.selected.length) return
+    this.history.begin()
     if (this.selectedFluidId) {
-      const id = this.selectedFluidId
-      this.history.apply(new RemoveFluidCommand(id))
+      this.history.apply(new RemoveFluidCommand(this.selectedFluidId))
       this.selectedFluidId = null
-      this.pushUi()
-      return
     }
-    const commands = []
     for (const id of this.selected) {
-      commands.push(new RemoveBodyCommand(id))
+      this.history.apply(new RemoveBodyCommand(id))
       this.engine.world?.removeBody(id)
+      this.engine.trails.delete(id)
+      if (this.engine.grab?.bodyId === id) this.engine.grab = null
     }
-    if (commands.length) {
-      this.history.apply(new BatchCommand(commands))
-    }
+    this.history.commit()
     this.selected = []
+    this.engine.syncBodies()
     this.pushUi()
   }
 
@@ -752,15 +289,30 @@ export class LabRuntime {
     this.pushUi()
   }
 
-  /** TODO: syncWorld incremental (docs/plan-de-mejora.md Fase 1). Reload evita divergencia documento/mundo. */
+  /** Incremental: keeps simTime, graphs and the velocity of untouched bodies. */
   undo(): void {
+    const prev = this.engine.doc
     if (!this.history.undo()) return
-    void this.engine.reload(this.engine.doc).then(() => this.pushUi())
+    this.afterHistoryJump(prev)
   }
 
   redo(): void {
+    const prev = this.engine.doc
     if (!this.history.redo()) return
-    void this.engine.reload(this.engine.doc).then(() => this.pushUi())
+    this.afterHistoryJump(prev)
+  }
+
+  private afterHistoryJump(prev: SceneDocument): void {
+    this.engine.syncWorld(prev, this.engine.doc)
+    const ids = new Set(this.engine.doc.bodies.map((b) => b.id))
+    this.selected = this.selected.filter((id) => ids.has(id))
+    if (
+      this.selectedFluidId &&
+      !this.engine.doc.fluidRegions.some((f) => f.id === this.selectedFluidId)
+    ) {
+      this.selectedFluidId = null
+    }
+    this.pushUi()
   }
 
   removeFluids(): void {
@@ -843,36 +395,6 @@ export class LabRuntime {
     this.pushUi()
   }
 
-  private commitJoin(s: Extract<InteractionState, { kind: 'joining' }>, world: Vec2): void {
-    const hit = this.engine.bodyAt(world.x, world.y)
-    if (!hit || hit === s.bodyA) return
-    const poseA = this.poseOf(s.bodyA)
-    const poseB = this.poseOf(hit)
-    const worldA = transformPoint({ x: 0, y: 0 }, s.anchorA, poseA)
-    const kind = this.store?.getState().jointKind ?? 'revolute'
-    const coincident = kind === 'fixed' || kind === 'revolute'
-    const localB = inverseTransformPoint({ x: 0, y: 0 }, coincident ? worldA : world, poseB)
-    const joint: SceneJoint = {
-      id: this.ids.next('joint'),
-      kind,
-      bodyA: s.bodyA,
-      bodyB: hit,
-      anchorA: { x: s.anchorA.x, y: s.anchorA.y },
-      anchorB: { x: localB.x, y: localB.y },
-    }
-    if (kind === 'fixed') {
-      joint.frameA = 0
-      joint.frameB = poseA.angle - poseB.angle
-    }
-    if (kind === 'spring' || kind === 'rope') joint.restLength = dist(worldA, world)
-    if (kind === 'spring') {
-      const params = springParamsForMasses(this.bodyMass(s.bodyA), this.bodyMass(hit))
-      joint.stiffness = params.stiffness
-      joint.damping = params.damping
-    }
-    this.addJoint(joint)
-  }
-
   async loadDocument(doc: SceneDocument): Promise<void> {
     this.history.clear()
     this.selected = []
@@ -908,68 +430,6 @@ export class LabRuntime {
 
   async importJson(text: string): Promise<void> {
     await this.loadDocument(parseDocument(text))
-  }
-
-  private onKeyDown(e: KeyboardEvent): void {
-    const tag = (e.target as HTMLElement | null)?.tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-    const store = this.store
-    if (!store) return
-
-    if (e.code === 'Space') {
-      store.setState({ spaceHeld: true })
-      if (!e.repeat) {
-        if (this.engine.clock.playing) this.engine.pause()
-        else this.engine.play()
-        this.pushUi()
-        e.preventDefault()
-      }
-    }
-    if (e.key === '.') this.engine.stepOnce()
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-      e.preventDefault()
-      if (e.shiftKey) this.redo()
-      else this.undo()
-    }
-    if (e.key === 'Delete' || e.key === 'Backspace') this.deleteSelected()
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
-      e.preventDefault()
-      this.duplicateSelected()
-    }
-    const map: Record<string, Tool> = {
-      v: ToolId.select,
-      h: ToolId.pan,
-      c: ToolId.circle,
-      r: ToolId.rect,
-      g: ToolId.polygon,
-      l: ToolId.line,
-      f: ToolId.force,
-      m: ToolId.measure,
-      w: ToolId.fluid,
-      e: ToolId.spill,
-      j: ToolId.joint,
-    }
-    const t = map[e.key.toLowerCase()]
-    if (t && !e.ctrlKey && !e.metaKey) {
-      store.setState({ tool: t })
-      if (t !== 'joint' && this.state.kind === 'joining') this.state = { kind: 'idle' }
-      this.engine.persistentForces = []
-    }
-    if (e.key === 'Escape') {
-      this.state = { kind: 'idle' }
-      this.engine.persistentForces = []
-    }
-    if (e.key === 'Enter' && this.state.kind === 'creating' && this.state.tool === 'polygon') {
-      const { start, current, points } = this.state
-      this.state = { kind: 'idle' }
-      this.commitCreate('polygon', start, current, points)
-    }
-  }
-
-  private onKeyUp(e: KeyboardEvent): void {
-    if (e.code === 'Space') {
-      this.store?.setState({ spaceHeld: false })
-    }
   }
 
   pushUi(): void {

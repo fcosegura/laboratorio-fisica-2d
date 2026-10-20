@@ -2,6 +2,7 @@ import type { BodyId } from '../core/ids.ts'
 import { inverseTransformPoint, type Transform } from '../core/math/transform.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import type { SceneBody } from '../scene/document.ts'
+import { pointerAngle, type HandleKind, type HandleLayout } from './handles.ts'
 import type { InteractionState } from './state.ts'
 import type { Tool } from './tools.ts'
 
@@ -20,6 +21,10 @@ export type DownEventContext = {
   camera: { x: number; y: number }
   poseOf: (id: BodyId) => KinematicPose
   bodyOf: (id: BodyId) => SceneBody | undefined
+  /** Rotate / scale handle under the pointer (select tool, single selection, paused). */
+  handle?: { kind: HandleKind; layout: HandleLayout } | null
+  /** Vertex of the selected fluid region under the pointer (select tool). */
+  vertex?: { regionId: string; index: number } | null
 }
 
 export function reduceDown(
@@ -35,6 +40,43 @@ export function reduceDown(
   if (button === 1 || button === 2 || tool === 'pan' || spaceHeld) {
     return {
       state: { kind: 'panning', startScreen: screen, origX: camera.x, origY: camera.y },
+    }
+  }
+
+  if (tool === 'select' && ctx.vertex && button === 0) {
+    return {
+      state: {
+        kind: 'editingVertex',
+        regionId: ctx.vertex.regionId,
+        index: ctx.vertex.index,
+        current: world,
+      },
+    }
+  }
+
+  if (tool === 'select' && ctx.handle && button === 0) {
+    const { kind, layout } = ctx.handle
+    if (kind === 'rotate') {
+      const angle = poseOf(layout.bodyId).angle
+      return {
+        state: {
+          kind: 'rotating',
+          bodyId: layout.bodyId,
+          center: layout.center,
+          startPointer: pointerAngle(layout.center, world),
+          origAngle: angle,
+          angle,
+        },
+      }
+    }
+    return {
+      state: {
+        kind: 'scaling',
+        bodyId: layout.bodyId,
+        center: layout.center,
+        start: world,
+        current: world,
+      },
     }
   }
 
@@ -123,7 +165,13 @@ export function reduceDown(
     }
   }
 
-  if (tool === 'circle' || tool === 'rect' || tool === 'line' || tool === 'fluid' || tool === 'spill') {
+  if (
+    tool === 'circle' ||
+    tool === 'rect' ||
+    tool === 'line' ||
+    tool === 'fluid' ||
+    tool === 'spill'
+  ) {
     return {
       state: { kind: 'creating', tool, start: world, current: world },
     }
@@ -138,9 +186,15 @@ export function reduceMove(state: InteractionState, world: Vec2): InteractionSta
     state.kind === 'applyingForce' ||
     state.kind === 'measuring' ||
     state.kind === 'selecting' ||
-    state.kind === 'joining'
+    state.kind === 'joining' ||
+    state.kind === 'scaling' ||
+    state.kind === 'editingVertex'
   ) {
     return { ...state, current: world }
+  }
+  if (state.kind === 'rotating') {
+    const delta = pointerAngle(state.center, world) - state.startPointer
+    return { ...state, angle: state.origAngle + delta }
   }
   return state
 }

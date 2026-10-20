@@ -157,9 +157,11 @@ export class PbfFluidSolver {
    * Used when the user draws a new spill region mid-simulation.
    */
   addVolume(vol: SceneFluidVolume, world?: PhysicsWorld | null): number {
-    const seeds = seedVolume(vol, this.n, world)
+    // One kernel (h, ρ0) for every particle: a second volume reuses the live spacing.
+    // Changing it would shift the rest density of the particles already settled.
+    const fixedSpacing = this.n > 0 ? this.spacing : null
+    const { seeds, spacing } = seedVolume(vol, this.n, world, fixedSpacing)
     if (!seeds.length) return 0
-    const spacing = vol.spacing > 0 ? vol.spacing : PBF_DEFAULT_SPACING
     this.spacing = spacing
     this.radius = spacing * SPH_COLLISION_RADIUS
     this.h = spacing * SPH_H_FACTOR
@@ -572,13 +574,20 @@ export class PbfFluidSolver {
       this.forceMag.set(body.id, F)
       const fx = -gx * F
       const fy = -gy * F
-      const drag = fluidDragForce(body.vx, body.vy, ρ, μ, clippedForDrag, area)
-      const torqueDamp = fluidTorqueDamp(ρ, area, body.omega)
+      const drag = fluidDragForce(body.vx, body.vy, ρ, μ, clippedForDrag, area, {
+        inertia: body.mass,
+        dt: world.dt,
+      })
+      const torqueDamp = fluidTorqueDamp(ρ, area, body.omega, {
+        inertia: body.inertia,
+        dt: world.dt,
+      })
       const bodySp = Math.hypot(body.vx, body.vy)
       const almostStill = bodySp < BODY_REST_SPEED && Math.abs(body.omega) < BODY_REST_OMEGA
       const residual = Math.abs(F - weight) / weight
       const liftRatio = F / weight
-      const at = almostStill ? { x: body.x, y: body.y } : { x: cx, y: cy }
+      // At rest: push through the COM (no torque). Body origin ≠ COM for asymmetric shapes.
+      const at = almostStill ? { x: body.comX, y: body.comY } : { x: cx, y: cy }
       world.applyForce(body.id, fx + drag.x, fy + drag.y, at, false)
       world.applyTorque(body.id, torqueDamp, false)
       seen.add(body.id)
@@ -701,11 +710,21 @@ export class PbfFluidSolver {
   }
 }
 
-function seedVolume(vol: SceneFluidVolume, already: number, world?: PhysicsWorld | null): Seed[] {
+/**
+ * Returns the spacing actually used: coarsening to fit PBF_MAX_PARTICLES must also drive
+ * h and ρ0, or the sparser seed reads as under-dense and collapses. With `fixedSpacing`
+ * (particles already live) there is no coarsening; the seed is truncated instead.
+ */
+function seedVolume(
+  vol: SceneFluidVolume,
+  already: number,
+  world: PhysicsWorld | null | undefined,
+  fixedSpacing: number | null,
+): { seeds: Seed[]; spacing: number } {
   const mat = getFluid(vol.materialId)
-  let spacing = vol.spacing > 0 ? vol.spacing : PBF_DEFAULT_SPACING
+  let spacing = fixedSpacing ?? (vol.spacing > 0 ? vol.spacing : PBF_DEFAULT_SPACING)
   let filled = fillPolygon(vol.polygon, spacing)
-  while (already + filled.length > PBF_MAX_PARTICLES && spacing < 0.5) {
+  while (fixedSpacing === null && already + filled.length > PBF_MAX_PARTICLES && spacing < 0.5) {
     spacing *= 1.25
     filled = fillPolygon(vol.polygon, spacing)
   }
@@ -733,7 +752,7 @@ function seedVolume(vol: SceneFluidVolume, already: number, world?: PhysicsWorld
       viscosity: mat.viscosity,
     })
   }
-  return out
+  return { seeds: out, spacing }
 }
 
 function hashVolumeId(id: string): number {

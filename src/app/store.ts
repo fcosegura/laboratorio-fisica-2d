@@ -64,6 +64,8 @@ export type LabUiState = {
   selectedFluidRegion: SceneFluidRegion | null
   /** Aviso muted cuando hay regiones de fluido con AABB solapado. */
   fluidOverlapWarning: string | null
+  /** Aviso breve de una acción rechazada (p. ej. tanque no convexo). */
+  notice: string | null
   /** Lista plana para el selector del inspector (id + nombre). */
   fluidRegionOptions: { id: string; name: string }[]
   selectedJoints: JointUi[]
@@ -96,6 +98,7 @@ export const useLabStore = create<LabUiState>(() => ({
   selectedFluidId: null,
   selectedFluidRegion: null,
   fluidOverlapWarning: null,
+  notice: null,
   fluidRegionOptions: [],
   selectedJoints: [],
   live: null,

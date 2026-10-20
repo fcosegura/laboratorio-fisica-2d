@@ -119,18 +119,22 @@ function intersect(a: Vec2, b: Vec2, nx: number, ny: number, d: number): Vec2 {
   return vec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
 }
 
-/** Clip subject against a convex CCW clipper using Sutherland–Hodgman. */
+/**
+ * Clip subject against a convex clipper using Sutherland–Hodgman. Either winding works:
+ * a CW clipper would otherwise flip every edge normal and clip everything away.
+ */
 export function clipPolygon(subject: readonly Vec2[], clipper: readonly Vec2[]): Vec2[] {
   let output = subject.map((p) => vec2(p.x, p.y))
   const m = clipper.length
   if (m === 0) return []
+  const sign = signedArea(clipper) < 0 ? -1 : 1
   for (let i = 0; i < m; i++) {
     const a = clipper[i]!
     const b = clipper[(i + 1) % m]!
     const edge = { x: b.x - a.x, y: b.y - a.y }
-    // Outward normal of a CCW clipper; clipHalfPlane keeps nx*x + ny*y <= d.
-    const nx = edge.y
-    const ny = -edge.x
+    // Outward normal (CCW-equivalent); clipHalfPlane keeps nx*x + ny*y <= d.
+    const nx = sign * edge.y
+    const ny = -sign * edge.x
     const d = nx * a.x + ny * a.y
     output = clipHalfPlane(output, nx, ny, d)
     if (output.length === 0) return []

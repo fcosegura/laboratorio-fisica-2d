@@ -22,6 +22,23 @@ export type InteractionState =
     }
   | { kind: 'panning'; startScreen: Vec2; origX: number; origY: number }
   | {
+      kind: 'rotating'
+      bodyId: BodyId
+      center: Vec2
+      /** Pointer angle around `center` at pointer-down. */
+      startPointer: number
+      origAngle: number
+      angle: number
+    }
+  | { kind: 'editingVertex'; regionId: string; index: number; current: Vec2 }
+  | {
+      kind: 'scaling'
+      bodyId: BodyId
+      center: Vec2
+      start: Vec2
+      current: Vec2
+    }
+  | {
       kind: 'applyingForce'
       bodyId: BodyId
       /** Click point in the body's local space so the handle follows the body. */
