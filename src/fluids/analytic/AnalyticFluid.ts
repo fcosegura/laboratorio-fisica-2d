@@ -42,6 +42,38 @@ export const STOKES_DRAG_K = 4 * Math.PI
 /** Angular drag: τ = −c ρ A R² ω with R² := A (submerged). Dimensionally kg·m²/s in 2D. */
 export const TORQUE_DRAG_C = 0.15
 
+/**
+ * Damping ratio ζ of the heave (bobbing) mode from wave radiation. The analytic tank has a
+ * flat surface and no waves, and water drag at bobbing speeds is tiny, so a float would
+ * oscillate for minutes. A real float radiates its energy as waves within a few periods.
+ */
+export const WAVE_DAMPING_RATIO = 0.25
+
+/**
+ * Wave radiation damping on the velocity along the surface normal n̂ (heave). Hydrostatic
+ * heave stiffness per metre of extra immersion is k = ρ g w (w = waterline width); the
+ * damping is c = 2 ζ √(k m), i.e. a fixed fraction of critical. Only velocity enters, so
+ * the equilibrium draft (ρ_body / ρ_fluid) is untouched.
+ */
+export function waveRadiationForce(
+  vx: number,
+  vy: number,
+  nx: number,
+  ny: number,
+  density: number,
+  g: number,
+  waterline: number,
+  mass: number,
+  dt: number,
+  zeta = WAVE_DAMPING_RATIO,
+): Vec2 {
+  if (!(waterline > 0) || !(mass > 0) || !(g > 0)) return { x: 0, y: 0 }
+  const k = density * g * waterline
+  const c = stableDamping(2 * zeta * Math.sqrt(k * mass), { inertia: mass, dt })
+  const vn = vx * nx + vy * ny
+  return { x: -c * vn * nx, y: -c * vn * ny }
+}
+
 function bodyPolygon(body: SceneBody, snap: BodySnapshot): Vec2[] {
   return shapeToWorldPolygon(body.shape, snap.x, snap.y, snap.angle)
 }
@@ -172,6 +204,8 @@ export function fluidTorqueDamp(
 export class AnalyticFluidSolver {
   readonly samples: FluidSample[] = []
   readonly debug: BuoyancyDebug[] = []
+  /** Heave damping ratio from wave radiation (0 disables it). */
+  waveDamping = WAVE_DAMPING_RATIO
 
   step(
     world: PhysicsWorld,
@@ -214,6 +248,7 @@ export class AnalyticFluidSolver {
 
       const width = Math.max(0.05, planeSpan(region.polygon, nx, ny, dRest))
       const clipD = dRest + displaced / width
+      const brimD = region.polygon.reduce((m, p) => Math.max(m, nx * p.x + ny * p.y), -Infinity)
       const surfaceY = Math.abs(ny) > 1e-8 ? clipD / ny : region.restSurfaceY
       this.samples.push({
         regionId: region.id,
@@ -251,13 +286,32 @@ export class AnalyticFluidSolver {
         })
         world.applyForce(item.body.id, fx + drag.x, fy + drag.y, c)
         world.applyTorque(item.body.id, torqueDamp)
+        // Wave radiation (heave only, through the COM): needs a waterline, so a fully
+        // submerged body gets none. The effective surface is capped at the tank brim: the
+        // risen level can exceed the polygon, and buoyancy above the brim is already clipped.
+        const waterline = planeSpan(item.originalPoly, nx, ny, Math.min(clipD, brimD))
+        const wave = waveRadiationForce(
+          item.snap.vx,
+          item.snap.vy,
+          nx,
+          ny,
+          mat.density,
+          gmag * item.body.gravityScale,
+          waterline,
+          item.snap.mass,
+          world.dt,
+          this.waveDamping,
+        )
+        if (wave.x !== 0 || wave.y !== 0) {
+          world.applyForce(item.body.id, wave.x, wave.y, { x: item.snap.comX, y: item.snap.comY })
+        }
         this.debug.push({
           bodyId: item.body.id,
           area,
           cx: c.x,
           cy: c.y,
-          fx: fx + drag.x,
-          fy: fy + drag.y,
+          fx: fx + drag.x + wave.x,
+          fy: fy + drag.y + wave.y,
         })
       }
     }
