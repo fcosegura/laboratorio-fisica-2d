@@ -71,6 +71,28 @@ export type SceneWind = {
 
 export const DEFAULT_AIR_DENSITY = 1.2
 
+/**
+ * Ventilador: chorro rectangular de anchura `width` que sale de (x, y) hacia `angle` y llega a
+ * `range`. Sopla aire sobre los cuerpos y empuja el agua de partículas que cae dentro (bajo el
+ * agua hace de hélice; pulsando, de generador de olas). No es un cuerpo: nada choca con él.
+ */
+export type SceneFan = {
+  id: string
+  name: string
+  x: number
+  y: number
+  /** Blow direction, radians (0 = +x). */
+  angle: number
+  /** Jet width across the axis, m. */
+  width: number
+  /** Jet reach along the axis, m. */
+  range: number
+  /** Outlet speed, m/s. */
+  speed: number
+  /** Pulse period, s: the speed goes 0 → speed → 0 each period. 0 = steady. */
+  period: number
+}
+
 /** Analytic hydrostatic tank (Archimedes + drag). Flat free surface; does not spill. */
 export type SceneFluidRegion = {
   id: FluidRegionId
@@ -158,6 +180,8 @@ export type SceneDocument = {
   joints: SceneJoint[]
   fluidRegions: SceneFluidRegion[]
   fluidVolumes: SceneFluidVolume[]
+  /** Optional: documents without fans omit it. */
+  fans?: SceneFan[]
   camera: CameraState
   visualization: VizLayers
 }

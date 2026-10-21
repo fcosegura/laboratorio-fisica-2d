@@ -38,6 +38,10 @@ export const PROPERTY_DESCRIPTORS = {
   windAngleDeg: { step: 5, unit: '°', label: 'Dirección' },
   windGustPct: { min: 0, max: 100, step: 5, unit: '%', label: 'Ráfagas' },
   airDensity: { min: 0, max: 1000, step: 0.1, unit: 'kg/m³', label: 'Densidad del aire' },
+  fanSpeed: { min: 0, max: 50, step: 0.5, unit: 'm/s', label: 'Velocidad' },
+  fanWidth: { min: 0.1, max: 20, step: 0.1, unit: 'm', label: 'Anchura' },
+  fanRange: { min: 0.2, max: 50, step: 0.1, unit: 'm', label: 'Alcance' },
+  fanPeriod: { min: 0, max: 20, step: 0.1, unit: 's', label: 'Pulso' },
 } as const satisfies Record<string, PropertyDescriptor>
 
 export function clampProperty(value: number, desc?: PropertyDescriptor): number {

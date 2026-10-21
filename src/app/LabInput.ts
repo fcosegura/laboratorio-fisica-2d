@@ -4,6 +4,14 @@ import { inverseTransformPoint, transformPoint } from '../core/math/transform.ts
 import { dist } from '../core/math/vec2.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import { screenToWorld, zoomAt } from '../camera/coords.ts'
+import {
+  aimFromDrag,
+  DEFAULT_FAN_RANGE,
+  DEFAULT_FAN_SPEED,
+  DEFAULT_FAN_WIDTH,
+  fanAt,
+  fanEditPatch,
+} from '../interaction/fan.ts'
 import { dragToForce, dragToImpulse, forceAnchorWorld } from '../interaction/force.ts'
 import { handleAt, moveVertex, scaleFactor, scaleShape, vertexAt } from '../interaction/handles.ts'
 import { reduceDown, reduceMove } from '../interaction/machine.ts'
@@ -149,9 +157,16 @@ export class LabInput {
     const vertexIndex = region
       ? vertexAt(region.polygon, world, this.lab.camera.pixelsPerMeter)
       : -1
+    const fans = this.lab.engine.doc.fans ?? []
+    const fanHit =
+      this.lab.tool() === 'select'
+        ? fanAt(fans, world, this.lab.camera.pixelsPerMeter, this.lab.selectedFanId)
+        : null
+    const fan = fanHit ? fans.find((f) => f.id === fanHit.id) : undefined
     const res = reduceDown(this.lab.state, {
       handle: layout && handleKind ? { kind: handleKind, layout } : null,
       vertex: region && vertexIndex >= 0 ? { regionId: region.id, index: vertexIndex } : null,
+      fan: fanHit && fan ? { ...fanHit, x: fan.x, y: fan.y } : null,
       tool: this.lab.tool(),
       world,
       screen,
@@ -173,6 +188,11 @@ export class LabInput {
         this.lab.selected = res.selected
       }
       if (res.selected.length) this.lab.selectedFluidId = null
+      this.lab.selectedFanId = null
+    }
+    if (res.state.kind === 'editingFan') {
+      this.lab.selectedFanId = res.state.fanId
+      this.lab.selectedFluidId = null
     }
 
     // Select tool miss on bodies: try fluid region before marquee.
@@ -242,7 +262,12 @@ export class LabInput {
       if (s.mode === 'force') this.applySustainedForce()
       return
     }
-    if (s.kind === 'measuring' || s.kind === 'selecting' || s.kind === 'placingThruster') {
+    if (
+      s.kind === 'measuring' ||
+      s.kind === 'selecting' ||
+      s.kind === 'placingThruster' ||
+      s.kind === 'editingFan'
+    ) {
       this.lab.state = { ...s, current: world }
       return
     }
@@ -325,6 +350,19 @@ export class LabInput {
     if (s.kind === 'placingThruster') {
       this.lab.state = { kind: 'idle' }
       this.commitThruster(s, world)
+      return
+    }
+    if (s.kind === 'editingFan') {
+      this.lab.state = { kind: 'idle' }
+      const fan = this.lab.engine.doc.fans?.find((f) => f.id === s.fanId)
+      if (!fan) return
+      const patch = fanEditPatch(fan, s.grab, s.offset, world)
+      // A plain click selects; it must not leave an empty Ctrl+Z entry.
+      const changed = (Object.keys(patch) as (keyof typeof patch)[]).some(
+        (k) => Math.abs((patch[k] as number) - (fan[k] as number)) > 1e-6,
+      )
+      if (changed) this.lab.commitFanPatch(fan.id, patch)
+      else this.lab.pushUi()
       return
     }
     if (s.kind === 'rotating') {
@@ -479,6 +517,20 @@ export class LabInput {
       this.lab.selected = []
       this.lab.selectedFluidId = regionId
       this.lab.pushUi()
+    } else if (tool === 'fan') {
+      // A click without a drag: default reach, blowing right.
+      const aim =
+        dist(a, b) < 0.15 ? { angle: 0, range: DEFAULT_FAN_RANGE } : aimFromDrag(a, b)
+      this.lab.addFan({
+        id: this.lab.ids.next('fan'),
+        name: 'Ventilador',
+        x: a.x,
+        y: a.y,
+        ...aim,
+        width: DEFAULT_FAN_WIDTH,
+        speed: DEFAULT_FAN_SPEED,
+        period: 0,
+      })
     } else if (tool === 'spill') {
       const minX = Math.min(a.x, b.x)
       const maxX = Math.max(a.x, b.x)
@@ -609,6 +661,7 @@ export class LabInput {
       l: ToolId.line,
       f: ToolId.force,
       t: ToolId.thruster,
+      a: ToolId.fan,
       m: ToolId.measure,
       w: ToolId.fluid,
       e: ToolId.spill,

@@ -2,6 +2,7 @@ import type {
   GravityPreset,
   SceneBody,
   SceneDocument,
+  SceneFan,
   SceneFluidRegion,
   SceneFluidVolume,
   SceneJoint,
@@ -215,6 +216,69 @@ export class RemoveFluidVolumeCommand implements Command {
           ? this.index
           : doc.fluidVolumes.length
       doc.fluidVolumes.splice(insertAt, 0, structuredClone(this.stored))
+    }
+  }
+}
+
+export class AddFanCommand implements Command {
+  fan: SceneFan
+  constructor(fan: SceneFan) {
+    this.fan = fan
+  }
+  apply(doc: SceneDocument): void {
+    ;(doc.fans ??= []).push(structuredClone(this.fan))
+  }
+  invert(doc: SceneDocument): void {
+    doc.fans = (doc.fans ?? []).filter((f) => f.id !== this.fan.id)
+  }
+}
+
+export class RemoveFanCommand implements Command {
+  id: string
+  stored: SceneFan | null = null
+  index = -1
+  constructor(id: string) {
+    this.id = id
+  }
+  apply(doc: SceneDocument): void {
+    const fans = doc.fans ?? []
+    const i = fans.findIndex((f) => f.id === this.id)
+    this.index = i
+    this.stored = i >= 0 ? structuredClone(fans[i]!) : null
+    if (i >= 0) fans.splice(i, 1)
+  }
+  invert(doc: SceneDocument): void {
+    const fans = (doc.fans ??= [])
+    if (this.stored && !fans.some((f) => f.id === this.stored!.id)) {
+      const insertAt = this.index >= 0 && this.index <= fans.length ? this.index : fans.length
+      fans.splice(insertAt, 0, structuredClone(this.stored))
+    }
+  }
+}
+
+export class UpdateFanCommand implements Command {
+  id: string
+  patch: Partial<SceneFan>
+  prev: Partial<SceneFan> | null = null
+  constructor(id: string, patch: Partial<SceneFan>, explicitPrev?: Partial<SceneFan>) {
+    this.id = id
+    this.patch = patch
+    if (explicitPrev) {
+      this.prev = structuredClone(explicitPrev)
+    }
+  }
+  apply(doc: SceneDocument): void {
+    const fan = doc.fans?.find((f) => f.id === this.id)
+    if (!fan) return
+    if (!this.prev) {
+      this.prev = structuredClone(fan)
+    }
+    Object.assign(fan, this.patch)
+  }
+  invert(doc: SceneDocument): void {
+    const fan = doc.fans?.find((f) => f.id === this.id)
+    if (fan && this.prev) {
+      Object.assign(fan, this.prev)
     }
   }
 }

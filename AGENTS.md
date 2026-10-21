@@ -77,6 +77,7 @@ Contratos:
 - Propulsor y viento (`src/sim/forces.ts`), leídos del documento en cada `physicsStep` desde la pose viva al inicio del paso, y empujados a `appliedForces`:
   - `SceneBody.thruster` (opcional): fuerza constante en N, dirección en el marco del cuerpo (`followsBody`, cohete) o del mundo, punto de aplicación local (fuera del CM da par). Herramienta 🚀 (T) o inspector.
   - `world.wind` (opcional): sin él, vacío como antes. Con él, arrastre `½ρC_dA|u|u`, `u = viento − v_CM`, aplicado en el CM; `A` = anchura proyectada de la forma perpendicular a `u`. Con viento 0 queda el rozamiento del aire. Tope `c ≤ m/dt` (como `stableDamping`). Ráfagas: tres senos inconmensurables que viajan con el viento.
+  - `doc.fans` (opcional): ventiladores, chorro rectangular (anchura × alcance) desde (x, y) hacia `angle`; perfil de velocidad pleno en el 70 % central con caída coseno a los bordes y `1 − (s/alcance)²` a lo largo; `period > 0` pulsa la velocidad (0 → v → 0). No son cuerpos: nada choca con ellos. Sobre cuerpos: arrastre de aire solo con la anchura del cuerpo que cae dentro del chorro. Sobre partículas (`PbfFluidSolver.applyVelocityChange`, antes de `step`): relaja hacia la velocidad del chorro la componente axial a `FAN_WATER_RATE` = 6/s, en un solo sentido (no frena agua más rápida ni toca la transversal, así no amortigua las olas). Herramienta 🌀 (A); con Seleccionar se arrastra el cuerpo para moverlo y el punto del extremo para orientarlo. Comandos `Add/Remove/UpdateFanCommand`.
 - Undo / redo: `engine.syncWorld(prev, next)` aplica solo el diff (altas, bajas, campos). `applyBodyChange` es el único sitio que decide qué campo reconstruye el cuerpo (`REBUILD_KEYS`) y cuál se aplica en vivo; `commitPatch` lo usa también.
 - `History.begin()` / `commit()` / `abort()`: varias mutaciones = un solo Ctrl+Z.
 - Picking: `engine.bodyAt` usa `pointHit` de Rapier y, si falla (pausa, sensores), `pickBody` sobre la geometría de la escena.
@@ -107,6 +108,7 @@ Contratos:
 - Combinación de contacto: rozamiento `Min`, restitución `Max` (el hielo desliza, la goma rebota), no la media geométrica habitual.
 - La amortiguación lineal / angular del cuerpo es «aire», no propiedad del material: los cuerpos dibujados nacen con 0 y cambiar de material no la toca. Los experimentos con fluido la fijan a mano.
 - Viento: `C_d = 1,2` para toda forma; fuerza en el CM (sin par aerodinámico, sin sombra entre cuerpos); actúa también sobre cuerpos sumergidos; no actúa sobre las partículas de fluido.
+- Ventilador: sobre los cuerpos siempre sopla aire (también si el cuerpo está sumergido); el agua lo empuja solo a través del acoplamiento partícula → sólido. Los tanques analíticos no ven los ventiladores (superficie plana, no hay olas que hacer).
 - La Ep del registrador usa la gravedad global; con `gravityScale ≠ 1` la energía total mostrada no se conserva.
 
 ## Interacción y UI

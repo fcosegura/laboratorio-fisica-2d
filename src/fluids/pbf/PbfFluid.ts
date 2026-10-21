@@ -277,6 +277,22 @@ export class PbfFluidSolver {
     this.syncSnapshot()
   }
 
+  /**
+   * External velocity field (fans): `push` writes a velocity change for a particle at (x, y)
+   * moving at (vx, vy) and returns true to apply it. Call before `step`; the incompressible
+   * solve then turns the push into a current and surface waves.
+   */
+  applyVelocityChange(
+    push: (x: number, y: number, vx: number, vy: number, out: Vec2) => boolean,
+  ): void {
+    const out = { x: 0, y: 0 }
+    for (let i = 0; i < this.n; i++) {
+      if (!push(this.x[i]!, this.y[i]!, this.vx[i]!, this.vy[i]!, out)) continue
+      this.vx[i]! += out.x
+      this.vy[i]! += out.y
+    }
+  }
+
   step(world: PhysicsWorld, dt: number, bodies: readonly SceneBody[] = []): void {
     if (this.n === 0) return
     const g = world.gravity

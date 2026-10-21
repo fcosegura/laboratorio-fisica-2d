@@ -2,6 +2,7 @@ import type { BodyId } from '../core/ids.ts'
 import { inverseTransformPoint, type Transform } from '../core/math/transform.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import type { SceneBody } from '../scene/document.ts'
+import type { FanGrab } from './fan.ts'
 import { pointerAngle, type HandleKind, type HandleLayout } from './handles.ts'
 import type { InteractionState } from './state.ts'
 import type { Tool } from './tools.ts'
@@ -25,6 +26,8 @@ export type DownEventContext = {
   handle?: { kind: HandleKind; layout: HandleLayout } | null
   /** Vertex of the selected fluid region under the pointer (select tool). */
   vertex?: { regionId: string; index: number } | null
+  /** Fan body or aim handle under the pointer (select tool), with the fan position. */
+  fan?: { id: string; grab: FanGrab; x: number; y: number } | null
 }
 
 export function reduceDown(
@@ -51,6 +54,21 @@ export function reduceDown(
         index: ctx.vertex.index,
         current: world,
       },
+    }
+  }
+
+  if (tool === 'select' && ctx.fan && button === 0) {
+    const { id, grab, x, y } = ctx.fan
+    return {
+      state: {
+        kind: 'editingFan',
+        fanId: id,
+        grab,
+        offset: { x: world.x - x, y: world.y - y },
+        current: world,
+      },
+      selected: [],
+      pushUi: true,
     }
   }
 
@@ -185,7 +203,8 @@ export function reduceDown(
     tool === 'rect' ||
     tool === 'line' ||
     tool === 'fluid' ||
-    tool === 'spill'
+    tool === 'spill' ||
+    tool === 'fan'
   ) {
     return {
       state: { kind: 'creating', tool, start: world, current: world },
@@ -200,6 +219,7 @@ export function reduceMove(state: InteractionState, world: Vec2): InteractionSta
     state.kind === 'creating' ||
     state.kind === 'applyingForce' ||
     state.kind === 'placingThruster' ||
+    state.kind === 'editingFan' ||
     state.kind === 'measuring' ||
     state.kind === 'selecting' ||
     state.kind === 'joining' ||

@@ -3,6 +3,7 @@ import {
   DEFAULT_VIZ,
   type JointKindUi,
   type SceneBody,
+  type SceneFan,
   type SceneFluidRegion,
   type SceneJoint,
   type SceneWind,
@@ -63,6 +64,7 @@ export type LabUiState = {
   selectedBody: SceneBody | null
   selectedFluidId: string | null
   selectedFluidRegion: SceneFluidRegion | null
+  selectedFan: SceneFan | null
   /** Aviso muted cuando hay regiones de fluido con AABB solapado. */
   fluidOverlapWarning: string | null
   /** Aviso breve de una acción rechazada (p. ej. tanque no convexo). */
@@ -104,6 +106,7 @@ export const useLabStore = create<LabUiState>(() => ({
   selectedBody: null,
   selectedFluidId: null,
   selectedFluidRegion: null,
+  selectedFan: null,
   fluidOverlapWarning: null,
   notice: null,
   fluidRegionOptions: [],

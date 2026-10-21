@@ -734,6 +734,83 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
       return doc
     },
   },
+  {
+    id: 'fan-waves',
+    title: 'Ventilador y oleaje',
+    build: () => {
+      const doc = base(
+        'Ventilador y oleaje',
+        'Un ventilador sumergido pulsa cada 2 s y empuja el agua de partículas: genera olas. ' +
+          'Otro ventilador, en el aire, sopla sobre la vela del barco y lo arrastra.',
+      )
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 4, 0.25, 'stone', { type: 'fixed' }),
+        box('body:left', 'Pared izq.', -3.1, 1.2, 0.1, 1.2, 'stone', { type: 'fixed' }),
+        box('body:right', 'Pared der.', 3.1, 1.2, 0.1, 1.2, 'stone', { type: 'fixed' }),
+        box('body:hull', 'Casco', 0.3, 1.35, 0.45, 0.15, 'wood', {
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
+        box('body:sail', 'Vela', 0.3, 1.9, 0.03, 0.4, 'cork', {
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
+      ]
+      doc.joints = [
+        {
+          id: 'joint:mast',
+          kind: 'fixed',
+          bodyA: 'body:hull',
+          bodyB: 'body:sail',
+          anchorA: { x: 0, y: 0.15 },
+          anchorB: { x: 0, y: -0.4 },
+          frameA: 0,
+          frameB: 0,
+        },
+      ]
+      doc.fluidVolumes = [
+        {
+          id: 'fluid:pool',
+          name: 'Agua',
+          polygon: [
+            { x: -2.95, y: 0.02 },
+            { x: 2.95, y: 0.02 },
+            { x: 2.95, y: 1.2 },
+            { x: -2.95, y: 1.2 },
+          ],
+          materialId: 'water',
+          spacing: 0.1,
+        },
+      ]
+      doc.fans = [
+        {
+          id: 'fan:water',
+          name: 'Ventilador sumergido',
+          x: -2.75,
+          y: 0.9,
+          angle: 0,
+          width: 0.6,
+          range: 2,
+          speed: 5,
+          period: 2,
+        },
+        {
+          id: 'fan:air',
+          name: 'Ventilador de aire',
+          x: -2.75,
+          y: 1.95,
+          angle: 0,
+          width: 0.9,
+          range: 6,
+          speed: 20,
+          period: 0,
+        },
+      ]
+      doc.camera = { x: 0, y: 1.3, pixelsPerMeter: 70 }
+      doc.visualization.fluidParticles = true
+      return doc
+    },
+  },
 ]
 
 export function experimentById(id: string): SceneDocument | null {

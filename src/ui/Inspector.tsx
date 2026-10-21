@@ -9,6 +9,7 @@ import {
   type BodyType,
   type MassMode,
   type SceneBody,
+  type SceneFan,
   type SceneJoint,
   type SceneWind,
 } from '../scene/document.ts'
@@ -23,6 +24,7 @@ export function Inspector() {
   const lab = useLab()
   const body = useLabStore((s) => s.selectedBody)
   const fluid = useLabStore((s) => s.selectedFluidRegion)
+  const fan = useLabStore((s) => s.selectedFan)
   const fluidOptions = useLabStore((s) => s.fluidRegionOptions)
   const fluidOverlap = useLabStore((s) => s.fluidOverlapWarning)
   const notice = useLabStore((s) => s.notice)
@@ -39,7 +41,8 @@ export function Inspector() {
       <div className="mb-3 text-xs uppercase tracking-wide text-muted">Inspector</div>
       {fluidOverlap && <p className="mb-3 text-[11px] text-muted">{fluidOverlap}</p>}
       {notice && <p className="mb-3 text-[11px] text-amber-300">{notice}</p>}
-      {!body && !fluid && (
+      {fan && !body && <FanCard fan={fan} />}
+      {!body && !fluid && !fan && (
         <div className="flex flex-col gap-3">
           <p className="text-muted">Selecciona un objeto o una región de fluido.</p>
           <WindCard />
@@ -410,6 +413,75 @@ function ThrusterCard({ body, mass, angle }: { body: SceneBody; mass: number; an
           {(t.force / (mass * g)).toFixed(2)}
         </p>
       )}
+    </div>
+  )
+}
+
+/** Local jet: position, aim, size, speed and pulse. */
+function FanCard({ fan }: { fan: SceneFan }) {
+  const lab = useLab()
+  const patch = (p: Partial<SceneFan>) => lab.commitFanPatch(fan.id, p)
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted">Ventilador</div>
+      <TextField label="Nombre" value={fan.name} onChange={(name) => patch({ name })} />
+      <div className="grid grid-cols-2 gap-2">
+        <Num
+          label="x (m)"
+          value={fan.x}
+          descriptor={PROPERTY_DESCRIPTORS.x}
+          onChange={(v) => patch({ x: v })}
+        />
+        <Num
+          label="y (m)"
+          value={fan.y}
+          descriptor={PROPERTY_DESCRIPTORS.y}
+          onChange={(v) => patch({ y: v })}
+        />
+        <Num
+          label="Hacia (°) · 0 = →"
+          value={fan.angle * DEG}
+          descriptor={PROPERTY_DESCRIPTORS.windAngleDeg}
+          onChange={(v) => patch({ angle: v / DEG })}
+        />
+        <Num
+          label="Velocidad (m/s)"
+          value={fan.speed}
+          descriptor={PROPERTY_DESCRIPTORS.fanSpeed}
+          onChange={(v) => patch({ speed: v })}
+        />
+        <Num
+          label="Alcance (m)"
+          value={fan.range}
+          descriptor={PROPERTY_DESCRIPTORS.fanRange}
+          onChange={(v) => patch({ range: v })}
+        />
+        <Num
+          label="Anchura (m)"
+          value={fan.width}
+          descriptor={PROPERTY_DESCRIPTORS.fanWidth}
+          onChange={(v) => patch({ width: v })}
+        />
+        <Num
+          label="Pulso (s) · 0 = continuo"
+          value={fan.period}
+          descriptor={PROPERTY_DESCRIPTORS.fanPeriod}
+          onChange={(v) => patch({ period: v })}
+        />
+      </div>
+      <p className="text-[11px] text-muted">
+        Sopla aire sobre los cuerpos del chorro. Dentro del agua de partículas empuja el agua
+        como una hélice; con pulso (≈ 1–2 s) genera olas. Los tanques analíticos tienen
+        superficie plana y no hacen olas. Arrastra el ventilador para moverlo y el punto del
+        extremo para orientarlo.
+      </p>
+      <button
+        type="button"
+        className="rounded-md border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10"
+        onClick={() => lab.deleteSelected()}
+      >
+        Eliminar ventilador
+      </button>
     </div>
   )
 }

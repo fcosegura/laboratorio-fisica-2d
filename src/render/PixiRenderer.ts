@@ -14,10 +14,17 @@ import {
   IMPULSE_VELOCITY_PER_METER,
 } from '../interaction/force.ts'
 import { getFluid, getSolid } from '../materials/catalog.ts'
-import type { SceneBody, SceneDocument, VizLayers } from '../scene/document.ts'
+import type { SceneBody, SceneDocument, SceneFan, VizLayers } from '../scene/document.ts'
 import { jointAnchorWorld } from '../scene/joints.ts'
 import type { AppliedForce, SimulationEngine } from '../sim/engine.ts'
-import { thrusterWorld, windAt } from '../sim/forces.ts'
+import { fanProfile, fanPulse, thrusterWorld, windAt } from '../sim/forces.ts'
+import {
+  aimFromDrag,
+  DEFAULT_FAN_RANGE,
+  DEFAULT_FAN_WIDTH,
+  fanEditPatch,
+  fanTip,
+} from '../interaction/fan.ts'
 import type { InteractionState } from '../interaction/state.ts'
 import {
   moveVertex,
@@ -256,6 +263,7 @@ export class PixiRenderer {
     }
     for (const f of doc.fluidRegions) includeAABB(box, aabbFromPoints(f.polygon))
     for (const v of doc.fluidVolumes) includeAABB(box, aabbFromPoints(v.polygon))
+    for (const f of doc.fans ?? []) includeAABB(box, aabbFromPoints([f, fanTip(f)]))
     return box
   }
 
@@ -280,7 +288,7 @@ export class PixiRenderer {
     this.drawWind(engine, cam)
     this.drawFluids(engine, selected)
     this.syncBodies(engine, selected)
-    this.drawOverlay(engine, viz, interaction)
+    this.drawOverlay(engine, viz, interaction, selected)
     if (handles) this.drawHandles(handles, engine, interaction)
     this.drawFluidVertices(engine, selected, interaction, cam.pixelsPerMeter)
     this.drawLabels(engine, cam, viz, interaction, measureLabel)
@@ -529,6 +537,7 @@ export class PixiRenderer {
     engine: SimulationEngine,
     viz: VizLayers,
     interaction: InteractionState,
+    selected: string[],
   ): void {
     const g = this.overlay
     g.clear()
@@ -595,6 +604,7 @@ export class PixiRenderer {
     }
 
     this.drawThrusters(g, engine)
+    this.drawFans(g, engine, selected, interaction)
 
     this.drawJoints(g, engine)
     this.drawGhost(g, engine, interaction)
@@ -647,6 +657,97 @@ export class PixiRenderer {
       g.circle(f.x, f.y, 0.07)
         .fill({ color: BG, alpha: 0.9 })
         .stroke({ color: THRUST, width: 0.03 })
+    }
+  }
+
+  /** Jet rectangle of a fan: nozzle edge, then the far edge. */
+  private jetOutline(fan: Pick<SceneFan, 'x' | 'y' | 'angle' | 'width' | 'range'>): number[] {
+    const jx = Math.cos(fan.angle)
+    const jy = Math.sin(fan.angle)
+    const nx = -jy * (fan.width / 2)
+    const ny = jx * (fan.width / 2)
+    const tx = fan.x + jx * fan.range
+    const ty = fan.y + jy * fan.range
+    return [fan.x + nx, fan.y + ny, tx + nx, ty + ny, tx - nx, ty - ny, fan.x - nx, fan.y - ny]
+  }
+
+  /**
+   * Fans: faint jet outline, streaks drifting down the jet (length and opacity follow the
+   * local, pulsed speed; frozen while paused), and a housing whose blades spin with the
+   * speed. A move / aim gesture previews the edited fan.
+   */
+  private drawFans(
+    g: Graphics,
+    engine: SimulationEngine,
+    selected: string[],
+    interaction: InteractionState,
+  ): void {
+    const fans = engine.doc.fans ?? []
+    const t = engine.clock.simTime
+    for (let i = 0; i < fans.length; i++) {
+      let fan = fans[i]!
+      if (interaction.kind === 'editingFan' && interaction.fanId === fan.id) {
+        fan = {
+          ...fan,
+          ...fanEditPatch(fan, interaction.grab, interaction.offset, interaction.current),
+        }
+      }
+      const isSel = selected.includes(fan.id)
+      const jx = Math.cos(fan.angle)
+      const jy = Math.sin(fan.angle)
+      const nx = -jy
+      const ny = jx
+      const speed = fan.speed * fanPulse(fan, t)
+
+      g.poly(this.jetOutline(fan)).stroke({
+        color: isSel ? SELECT : WIND,
+        width: isSel ? 0.035 : 0.02,
+        alpha: isSel ? 0.7 : 0.18,
+      })
+
+      const count = Math.min(60, Math.max(6, Math.round(fan.width * fan.range * 2)))
+      for (let k = 0; k < count; k++) {
+        const across = (hash01(k, i, 1) - 0.5) * fan.width * 0.9
+        const phase = ((t * Math.max(fan.speed, 0.5) * 0.5) / fan.range + hash01(k, i, 2)) % 1
+        const s = phase * fan.range
+        const local = speed * fanProfile(fan, s, across)
+        if (local < 0.05) continue
+        const len = Math.min(0.8, 0.08 + local * 0.06)
+        const x = fan.x + jx * s + nx * across
+        const y = fan.y + jy * s + ny * across
+        g.moveTo(x - jx * len, y - jy * len)
+          .lineTo(x, y)
+          .stroke({
+            color: WIND,
+            width: 0.025,
+            alpha: 0.45 * Math.sin(Math.PI * phase) * Math.min(1, local / 4 + 0.25),
+            cap: 'round',
+          })
+      }
+
+      // Housing behind the nozzle, blades seen side-on (a spinning line across).
+      const half = Math.min(fan.width / 2, 0.45) + 0.05
+      const depth = 0.3
+      const at = (a: number, b: number) => [fan.x + jx * a + nx * b, fan.y + jy * a + ny * b]
+      g.poly([...at(0, half), ...at(-depth, half), ...at(-depth, -half), ...at(0, -half)])
+        .fill({ color: 0x2a3444, alpha: 0.95 })
+        .stroke({ color: isSel ? SELECT : 0x9fb3c8, width: 0.03 })
+      const spin = engine.clock.playing ? t * (2 + fan.speed * fanPulse(fan, t) * 2) : 0.6
+      for (const p of [spin, spin + Math.PI / 2]) {
+        const r = (half - 0.06) * Math.cos(p)
+        const [ax, ay] = at(-depth / 2, r)
+        const [bx, by] = at(-depth / 2, -r)
+        g.moveTo(ax!, ay!).lineTo(bx!, by!).stroke({ color: 0xcfe3ff, width: 0.04, cap: 'round' })
+      }
+      const [hx, hy] = at(-depth / 2, 0)
+      g.circle(hx!, hy!, 0.05).fill({ color: 0xcfe3ff })
+
+      if (isSel && interaction.kind !== 'editingFan') {
+        const tip = fanTip(fan)
+        g.circle(tip.x, tip.y, 0.09)
+          .fill({ color: BG, alpha: 0.9 })
+          .stroke({ color: SELECT, width: 0.035 })
+      }
     }
   }
 
@@ -765,6 +866,17 @@ export class PixiRenderer {
         FORCE,
         0.06,
       )
+    }
+    if (interaction.kind === 'creating' && interaction.tool === 'fan') {
+      const a = interaction.start
+      const b = interaction.current
+      const aim =
+        Math.hypot(b.x - a.x, b.y - a.y) < 0.15
+          ? { angle: 0, range: DEFAULT_FAN_RANGE }
+          : aimFromDrag(a, b)
+      const preview = { x: a.x, y: a.y, width: DEFAULT_FAN_WIDTH, ...aim }
+      g.poly(this.jetOutline(preview)).stroke({ color: WIND, width: 0.035, alpha: 0.8 })
+      g.circle(a.x, a.y, 0.08).fill({ color: WIND })
     }
     if (interaction.kind === 'placingThruster') {
       const pose = this.poseOf(engine, interaction.bodyId)

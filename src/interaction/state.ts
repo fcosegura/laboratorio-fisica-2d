@@ -1,5 +1,6 @@
 import type { BodyId } from '../core/ids.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
+import type { FanGrab } from './fan.ts'
 import type { Tool } from './tools.ts'
 
 export type InteractionState =
@@ -51,6 +52,14 @@ export type InteractionState =
       bodyId: BodyId
       /** Anchor in the body's local space. */
       local: Vec2
+      current: Vec2
+    }
+  | {
+      kind: 'editingFan'
+      fanId: string
+      grab: FanGrab
+      /** Pointer minus fan position at pointer-down (move keeps the grab point). */
+      offset: Vec2
       current: Vec2
     }
   | { kind: 'measuring'; start: Vec2; current: Vec2 }

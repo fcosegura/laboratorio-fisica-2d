@@ -143,6 +143,7 @@ function ToolIcon({ id }: { id: Tool }) {
     spill: '🌊',
     force: '↗',
     thruster: '🚀',
+    fan: '🌀',
     measure: '📏',
     joint: '⚭',
   }

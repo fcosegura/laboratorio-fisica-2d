@@ -7,15 +7,18 @@ import type { Tool } from '../interaction/tools.ts'
 import { PixiRenderer } from '../render/PixiRenderer.ts'
 import {
   AddBodyCommand,
+  AddFanCommand,
   AddJointCommand,
   BatchCommand,
   DuplicateBodyCommand,
   RemoveBodyCommand,
+  RemoveFanCommand,
   RemoveFluidCommand,
   RemoveFluidVolumeCommand,
   RemoveJointCommand,
   SetWorldCommand,
   UpdateBodyCommand,
+  UpdateFanCommand,
   UpdateFluidRegionCommand,
   UpdateJointCommand,
 } from '../scene/commands.ts'
@@ -27,6 +30,7 @@ import {
   type GravityPreset,
   type SceneBody,
   type SceneDocument,
+  type SceneFan,
   type SceneFluidRegion,
   type SceneJoint,
   type SceneWind,
@@ -51,6 +55,8 @@ export class LabRuntime {
   selected: string[] = []
   /** Región de fluido analítico seleccionada (independiente de cuerpos). */
   selectedFluidId: string | null = null
+  /** Ventilador seleccionado (independiente de cuerpos y fluidos). */
+  selectedFanId: string | null = null
   canvas: HTMLCanvasElement | null = null
   private raf = 0
   private lastT = 0
@@ -108,7 +114,11 @@ export class LabRuntime {
           this.engine,
           this.camera,
           this.store?.getState().viz ?? this.engine.doc.visualization,
-          this.selectedFluidId ? [...this.selected, this.selectedFluidId] : this.selected,
+          [
+            ...this.selected,
+            ...(this.selectedFluidId ? [this.selectedFluidId] : []),
+            ...(this.selectedFanId ? [this.selectedFanId] : []),
+          ],
           this.state,
           this.handles(),
         )
@@ -231,17 +241,36 @@ export class LabRuntime {
 
   selectFluidRegion(id: string | null): void {
     this.selected = []
+    this.selectedFanId = null
     this.selectedFluidId = id
+    this.pushUi()
+  }
+
+  addFan(fan: SceneFan): void {
+    this.history.apply(new AddFanCommand(fan))
+    this.selected = []
+    this.selectedFluidId = null
+    this.selectedFanId = fan.id
+    this.pushUi()
+  }
+
+  /** Fans are read from the document every step: nothing to push into the live world. */
+  commitFanPatch(id: string, patch: Partial<SceneFan>): void {
+    this.history.apply(new UpdateFanCommand(id, patch))
     this.pushUi()
   }
 
   /** Selected fluid region and bodies go in one transaction: a single Ctrl+Z restores all. */
   deleteSelected(): void {
-    if (!this.selectedFluidId && !this.selected.length) return
+    if (!this.selectedFluidId && !this.selectedFanId && !this.selected.length) return
     this.history.begin()
     if (this.selectedFluidId) {
       this.history.apply(new RemoveFluidCommand(this.selectedFluidId))
       this.selectedFluidId = null
+    }
+    if (this.selectedFanId) {
+      this.history.apply(new RemoveFanCommand(this.selectedFanId))
+      this.selectedFanId = null
     }
     for (const id of this.selected) {
       this.history.apply(new RemoveBodyCommand(id))
@@ -322,6 +351,9 @@ export class LabRuntime {
     ) {
       this.selectedFluidId = null
     }
+    if (this.selectedFanId && !this.engine.doc.fans?.some((f) => f.id === this.selectedFanId)) {
+      this.selectedFanId = null
+    }
     this.pushUi()
   }
 
@@ -377,6 +409,7 @@ export class LabRuntime {
     }
     this.selected = created
     this.selectedFluidId = null
+    this.selectedFanId = null
     this.pushUi()
   }
 
@@ -409,12 +442,14 @@ export class LabRuntime {
     this.history.clear()
     this.selected = []
     this.selectedFluidId = null
+    this.selectedFanId = null
     this.camera = { ...doc.camera }
     const allIds = [
       ...doc.bodies.map((b) => b.id),
       ...doc.joints.map((j) => j.id),
       ...doc.fluidRegions.map((f) => f.id),
       ...doc.fluidVolumes.map((f) => f.id),
+      ...(doc.fans ?? []).map((f) => f.id),
     ]
     this.ids.seedMax(allIds)
     this.store?.setState({ viz: { ...doc.visualization } })
@@ -460,6 +495,8 @@ export class LabRuntime {
       this.engine.doc.fluidRegions.find((r) => r.id === this.selectedFluidId) ?? null
     // Undo/redo o borrar puede dejar un id huérfano; no empujar región fantasma a React.
     if (this.selectedFluidId && !selectedFluid) this.selectedFluidId = null
+    const selectedFan = this.engine.doc.fans?.find((f) => f.id === this.selectedFanId) ?? null
+    if (this.selectedFanId && !selectedFan) this.selectedFanId = null
     store.setState({
       playing: this.engine.clock.playing,
       timeScale: this.engine.clock.timeScale,
@@ -468,6 +505,7 @@ export class LabRuntime {
       selectedBody: selected ? structuredClone(selected) : null,
       selectedFluidId: selectedFluid?.id ?? null,
       selectedFluidRegion: selectedFluid ? structuredClone(selectedFluid) : null,
+      selectedFan: selectedFan ? structuredClone(selectedFan) : null,
       fluidRegionOptions: this.engine.doc.fluidRegions.map((r) => ({ id: r.id, name: r.name })),
       fluidOverlapWarning: fluidOverlapWarning(this.engine.doc.fluidRegions),
       selectedJoints,

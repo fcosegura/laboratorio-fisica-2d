@@ -118,6 +118,23 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         spacing: num.positive().max(1),
       }),
     ),
+    fans: z
+      .array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          x: num,
+          y: num,
+          angle: num,
+          width: num.min(PROPERTY_DESCRIPTORS.fanWidth.min).max(PROPERTY_DESCRIPTORS.fanWidth.max),
+          range: num.min(PROPERTY_DESCRIPTORS.fanRange.min).max(PROPERTY_DESCRIPTORS.fanRange.max),
+          speed: num.min(PROPERTY_DESCRIPTORS.fanSpeed.min).max(PROPERTY_DESCRIPTORS.fanSpeed.max),
+          period: num
+            .min(PROPERTY_DESCRIPTORS.fanPeriod.min)
+            .max(PROPERTY_DESCRIPTORS.fanPeriod.max),
+        }),
+      )
+      .optional(),
     camera: z.object({
       x: num,
       y: num,
@@ -239,6 +256,19 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
           path: ['fluidRegions', i, 'materialId'],
         })
       }
+    }
+
+    const fanIds = new Set<string>()
+    for (let i = 0; i < (doc.fans?.length ?? 0); i++) {
+      const id = doc.fans![i]!.id
+      if (fanIds.has(id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `ID de ventilador duplicado: ${id}`,
+          path: ['fans', i, 'id'],
+        })
+      }
+      fanIds.add(id)
     }
 
     for (let i = 0; i < doc.fluidVolumes.length; i++) {

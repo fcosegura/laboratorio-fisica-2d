@@ -1,7 +1,7 @@
 import { PHYSICS_DT } from '../core/constants.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import type { BodySnapshot, PhysicsShape } from '../physics/ports.ts'
-import type { SceneThruster, SceneWind } from '../scene/document.ts'
+import type { SceneFan, SceneThruster, SceneWind } from '../scene/document.ts'
 
 /** Drag coefficient for every shape (blunt 2D body, between a cylinder and a flat plate). */
 export const AIR_DRAG_COEFF = 1.2
@@ -110,4 +110,114 @@ export function windForce(
   const area = projectedWidth(shape, snap.angle, ux / u, uy / u)
   const c = Math.min(0.5 * wind.airDensity * AIR_DRAG_COEFF * area * u, snap.mass / dt)
   return { x: c * ux, y: c * uy }
+}
+
+/**
+ * Rate (1/s) at which a jet brings water to its speed: a propeller, not air on water. 6/s
+ * takes the water in the jet core to ~90 % of the jet speed in 0.4 s.
+ */
+export const FAN_WATER_RATE = 6
+
+/** Fraction of the jet half-width with full speed; the rest tapers (cosine) to zero. */
+const FAN_CORE = 0.7
+
+/** Pulse factor in [0, 1]: 0 → 1 → 0 once per period (smooth start). Steady when period = 0. */
+export function fanPulse(fan: SceneFan, t: number): number {
+  return fan.period > 0 ? 0.5 * (1 - Math.cos((2 * Math.PI * t) / fan.period)) : 1
+}
+
+/**
+ * Jet speed profile at a point given in the fan frame (`s` along the axis, `n` across):
+ * full in the core, cosine taper to the edges, and 1 − (s/range)² along the reach.
+ * 0 outside the jet rectangle.
+ */
+export function fanProfile(fan: SceneFan, s: number, n: number): number {
+  if (s < 0 || s > fan.range) return 0
+  const half = fan.width / 2
+  const a = Math.abs(n)
+  if (a >= half) return 0
+  const core = half * FAN_CORE
+  const across = a <= core ? 1 : 0.5 * (1 + Math.cos((Math.PI * (a - core)) / (half - core)))
+  const r = s / fan.range
+  return across * (1 - r * r)
+}
+
+/** World point → fan frame (s along the blow direction, n across). */
+export function toFanFrame(fan: SceneFan, x: number, y: number): { s: number; n: number } {
+  const c = Math.cos(fan.angle)
+  const sn = Math.sin(fan.angle)
+  const dx = x - fan.x
+  const dy = y - fan.y
+  return { s: dx * c + dy * sn, n: -dx * sn + dy * c }
+}
+
+/**
+ * Air jet on a body: drag ½ ρ C_d A |u| u against the jet velocity, where A is only the part
+ * of the body's width (across the jet) that lies inside the jet. Speed is read at the COM's
+ * reach and at the centre of that overlap. Same `c ≤ m/dt` cap as the wind.
+ */
+export function fanForce(
+  fan: SceneFan,
+  shape: PhysicsShape,
+  snap: BodySnapshot,
+  t: number,
+  airDensity: number,
+  dt = PHYSICS_DT,
+): Vec2 {
+  const speed = fan.speed * fanPulse(fan, t)
+  if (speed < 1e-6 || !(snap.mass > 0)) return { x: 0, y: 0 }
+  const jx = Math.cos(fan.angle)
+  const jy = Math.sin(fan.angle)
+  const { s, n } = toFanFrame(fan, snap.comX, snap.comY)
+  // Extent of the body along the axis (seen by a flow across it) and across it.
+  const along = projectedWidth(shape, snap.angle, -jy, jx)
+  if (s + along / 2 < 0 || s - along / 2 > fan.range) return { x: 0, y: 0 }
+  const across = projectedWidth(shape, snap.angle, jx, jy)
+  const lo = Math.max(n - across / 2, -fan.width / 2)
+  const hi = Math.min(n + across / 2, fan.width / 2)
+  if (hi <= lo) return { x: 0, y: 0 }
+  const k = fanProfile(fan, Math.min(Math.max(s, 0), fan.range * 0.999), (lo + hi) / 2)
+  const ux = speed * k * jx - snap.vx
+  const uy = speed * k * jy - snap.vy
+  const u = Math.hypot(ux, uy)
+  if (u < 1e-6) return { x: 0, y: 0 }
+  const c = Math.min(0.5 * airDensity * AIR_DRAG_COEFF * (hi - lo) * u, snap.mass / dt)
+  return { x: c * ux, y: c * uy }
+}
+
+/**
+ * Velocity change of a fluid particle at (x, y) moving at (vx, vy), written to `out`: each
+ * jet relaxes the velocity component along its axis towards speed · profile at `rate` (1/s),
+ * one-sided (it only accelerates; it never brakes faster water nor touches the cross
+ * component, so the waves it makes are not damped). Returns false outside every jet.
+ */
+export function fanParticlePush(
+  fans: readonly SceneFan[],
+  t: number,
+  dt: number,
+  rate: number,
+  x: number,
+  y: number,
+  vx: number,
+  vy: number,
+  out: Vec2,
+): boolean {
+  out.x = 0
+  out.y = 0
+  let hit = false
+  const k = 1 - Math.exp(-rate * dt)
+  for (const fan of fans) {
+    const { s, n } = toFanFrame(fan, x, y)
+    const target = fan.speed * fanPulse(fan, t) * fanProfile(fan, s, n)
+    if (target <= 0) continue
+    const jx = Math.cos(fan.angle)
+    const jy = Math.sin(fan.angle)
+    const vj = vx * jx + vy * jy
+    if (vj >= target) continue
+    const dv = (target - vj) * k
+    out.x += dv * jx
+    out.y += dv * jy
+    hit = true
+  }
+  return hit
 }

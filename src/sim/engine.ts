@@ -6,12 +6,23 @@ import { loadRapier } from '../physics/adapters/rapier/loadRapier.ts'
 import type { BodySnapshot, PhysicsContact, PhysicsWorld } from '../physics/ports.ts'
 import { bodyToDesc, buildWorld } from '../scene/builder.ts'
 import { jointToDesc, reattachJoints } from '../scene/joints.ts'
-import { cloneDocument, type SceneBody, type SceneDocument } from '../scene/document.ts'
+import {
+  cloneDocument,
+  DEFAULT_AIR_DENSITY,
+  type SceneBody,
+  type SceneDocument,
+} from '../scene/document.ts'
 import { pickBody } from '../scene/picking.ts'
 import { AnalyticFluidSolver } from '../fluids/analytic/AnalyticFluid.ts'
 import { PbfFluidSolver } from '../fluids/pbf/PbfFluid.ts'
 import { Clock } from './clock.ts'
-import { thrusterWorld, windForce } from './forces.ts'
+import {
+  FAN_WATER_RATE,
+  fanForce,
+  fanParticlePush,
+  thrusterWorld,
+  windForce,
+} from './forces.ts'
 import { DataRecorder } from './recorder.ts'
 
 export type AppliedForce = {
@@ -282,7 +293,7 @@ export class SimulationEngine {
     for (const f of this.persistentForces) {
       this.world.applyForce(f.bodyId, f.fx, f.fy, { x: f.x, y: f.y })
     }
-    this.applyThrustersAndWind(this.world, stepTime - PHYSICS_DT)
+    this.applyAuthoredForces(this.world, stepTime - PHYSICS_DT)
     if (this.grab) this.applyGrab(this.world, this.grab)
     const t0 = performance.now()
     // Analytic tanks, then PBF particles (distinct models).
@@ -303,14 +314,22 @@ export class SimulationEngine {
 
   /**
    * Authored constant forces, read from the document every step from the live pose at the
-   * start of the step: thrusters (constant in the body or world frame) and air drag / wind.
-   * Both go to `appliedForces` so the force layer shows them.
+   * start of the step: thrusters (constant in the body or world frame), air drag / wind and
+   * fan jets. All go to `appliedForces` so the force layer shows them. Fans also push the
+   * particle water (one-sided, see `fanParticlePush`).
    */
-  private applyThrustersAndWind(world: PhysicsWorld, t: number): void {
+  private applyAuthoredForces(world: PhysicsWorld, t: number): void {
     const wind = this.doc.world.wind
+    const fans = this.doc.fans ?? []
+    const airDensity = wind?.airDensity ?? DEFAULT_AIR_DENSITY
+    if (fans.length && this.particles.particleCount) {
+      this.particles.applyVelocityChange((x, y, vx, vy, out) =>
+        fanParticlePush(fans, t, PHYSICS_DT, FAN_WATER_RATE, x, y, vx, vy, out),
+      )
+    }
     for (const body of this.doc.bodies) {
       if (body.type !== 'dynamic') continue
-      if (!body.thruster && !wind) continue
+      if (!body.thruster && !wind && !fans.length) continue
       const snap = this.currMap.get(body.id)
       if (!snap) continue
       if (body.thruster && body.thruster.force > 0) {
@@ -318,8 +337,9 @@ export class SimulationEngine {
         world.applyForce(body.id, f.fx, f.fy, { x: f.x, y: f.y })
         this.appliedForces.push({ bodyId: body.id, ...f })
       }
-      if (wind) {
-        const f = windForce(wind, body.shape, snap, t)
+      const airForces = fans.map((fan) => fanForce(fan, body.shape, snap, t, airDensity))
+      if (wind) airForces.push(windForce(wind, body.shape, snap, t))
+      for (const f of airForces) {
         if (f.x === 0 && f.y === 0) continue
         const at = { x: snap.comX, y: snap.comY }
         world.applyForce(body.id, f.x, f.y, at)
