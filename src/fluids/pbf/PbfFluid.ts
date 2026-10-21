@@ -1,6 +1,7 @@
 import type { Vec2 } from '../../core/math/vec2.ts'
 import {
   clipHalfPlane,
+  ensureCCW,
   pointInPolygon,
   polygonArea,
   polygonCentroid,
@@ -8,8 +9,13 @@ import {
 import type { SceneBody, SceneFluidVolume } from '../../scene/document.ts'
 import { getFluid } from '../../materials/catalog.ts'
 import type { BodyId } from '../../core/ids.ts'
-import type { ColliderDesc, PhysicsWorld } from '../../physics/ports.ts'
-import { fluidDragForce, fluidTorqueDamp } from '../analytic/AnalyticFluid.ts'
+import type { BodySnapshot, ColliderDesc, PhysicsWorld } from '../../physics/ports.ts'
+import {
+  fluidDragForce,
+  fluidTorqueDamp,
+  planeSpan,
+  waveRadiationForce,
+} from '../analytic/AnalyticFluid.ts'
 import { shapeToWorldPolygons } from '../bodyPolygon.ts'
 import { collideSolidCached, cacheSolids, pushOutOfShape } from './collide.ts'
 import { estimateFreeSurfaceD } from './freeSurface.ts'
@@ -46,8 +52,6 @@ const V_MAX = 8
 const V_REST = 0.008
 /** Cap total impulse applied to one dynamic body per step (avoids explosions). */
 const MAX_BODY_IMPULSE = 1.8
-/** Max solid push absorbed without becoming fake velocity (stops wall jets). */
-const MAX_SOLID_CORR = 0.08
 /** Below this, a floating body uses Archimedes only (no particle kicks, no Rapier wake). */
 const BODY_REST_SPEED = 0.09
 const BODY_REST_OMEGA = 0.12
@@ -56,7 +60,22 @@ const BODY_IMPACT_SPEED = 0.35
 const MIN_COUPLE_IMPULSE = 2e-4
 /** EMA of the local free surface (low = smoother rest, high = faster splash). */
 const SURFACE_BLEND = 0.1
-const FORCE_BLEND = 0.12
+/** Heave damping ratio for floats in particle water (wave radiation; see waveRadiationForce). */
+const SPH_HEAVE_DAMPING = 0.5
+/** Roll damping ratio for floats in particle water, against the waterplane roll stiffness. */
+const SPH_ROLL_DAMPING = 0.25
+/** A boundary piece is wet if a particle centre is within radius + WET_REACH·spacing. */
+const WET_REACH = 0.9
+/** Half width of the particle column above a boundary piece, in spacings. */
+const COLUMN_HALF_WIDTH = 1
+/** A vertical gap larger than this (in spacings) ends the connected water column. */
+const COLUMN_GAP = 2.5
+/** Boundary sampling step, in spacings. */
+const SAMPLE_SPACING = 0.5
+/** Steps (0.5 s) a float keeps the Archimedes model after losing water on one flank. */
+const FLOAT_HOLD_STEPS = 30
+/** Faces whose outward normal has an up component above this take only their own column. */
+const UPWARD_FACE = 0.5
 
 type Seed = {
   x: number
@@ -127,9 +146,10 @@ export class PbfFluidSolver {
     fx: number
     fy: number
   }[] = []
-  /** Smoothed free-surface plane offset per dynamic body. */
+  /** Steps since a body last had water on both flanks (present = Archimedes path). */
+  private readonly floatHold = new Map<string, number>()
+  /** Smoothed free-surface plane offset per floating body (Archimedes path). */
   private readonly surfaceD = new Map<string, number>()
-  private readonly forceMag = new Map<string, number>()
 
   get particleCount(): number {
     return this.n
@@ -142,8 +162,8 @@ export class PbfFluidSolver {
     this.color = []
     this.opacity = []
     this.buoyancyDebug.length = 0
+    this.floatHold.clear()
     this.surfaceD.clear()
-    this.forceMag.clear()
   }
 
   /** Full reseeds from authored volumes (reset / reload). */
@@ -226,6 +246,11 @@ export class PbfFluidSolver {
     const bodyImpulse = new Map<BodyId, { x: number; y: number; jx: number; jy: number }>()
     const solidDx = new Float64Array(n)
     const solidDy = new Float64Array(n)
+    const contact = {
+      ux: new Float64Array(n),
+      uy: new Float64Array(n),
+      hit: new Uint8Array(n),
+    }
     const dvx = new Float64Array(n)
     const dvy = new Float64Array(n)
     const wsum = new Float64Array(n)
@@ -233,6 +258,7 @@ export class PbfFluidSolver {
     for (let sub = 0; sub < SPH_SUBSTEPS; sub++) {
       solidDx.fill(0)
       solidDy.fill(0)
+      contact.hit.fill(0)
 
       for (let i = 0; i < n; i++) {
         this.vx[i]! += g.x * dtSub
@@ -244,7 +270,17 @@ export class PbfFluidSolver {
       for (let i = 0; i < n; i++) {
         const bx = this.px[i]!
         const by = this.py[i]!
-        collideSolidCached(this.px, this.py, i, rCol, solids, bodyImpulse, this.x[i]!, this.y[i]!)
+        collideSolidCached(
+          this.px,
+          this.py,
+          i,
+          rCol,
+          solids,
+          bodyImpulse,
+          this.x[i]!,
+          this.y[i]!,
+          contact,
+        )
         solidDx[i]! += this.px[i]! - bx
         solidDy[i]! += this.py[i]! - by
       }
@@ -306,29 +342,40 @@ export class PbfFluidSolver {
       for (let i = 0; i < n; i++) {
         const bx = this.px[i]!
         const by = this.py[i]!
-        collideSolidCached(this.px, this.py, i, rCol, solids, bodyImpulse, this.x[i]!, this.y[i]!)
+        collideSolidCached(
+          this.px,
+          this.py,
+          i,
+          rCol,
+          solids,
+          bodyImpulse,
+          this.x[i]!,
+          this.y[i]!,
+          contact,
+        )
         solidDx[i]! += this.px[i]! - bx
         solidDy[i]! += this.py[i]! - by
       }
 
       for (let i = 0; i < n; i++) {
-        let sx = solidDx[i]!
-        let sy = solidDy[i]!
+        // A solid push is penetration recovery, never velocity: solids do not move inside
+        // this step, and turning the push into speed shot particles out of corners (jets).
+        // A moving solid still drives the water through the contact-velocity floor below.
+        const sx = solidDx[i]!
+        const sy = solidDy[i]!
         const sc = Math.hypot(sx, sy)
-        if (sc > MAX_SOLID_CORR) {
-          const s = MAX_SOLID_CORR / sc
-          sx *= s
-          sy *= s
-        }
         this.vx[i] = (this.px[i]! - sx - this.x[i]!) / dtSub
         this.vy[i] = (this.py[i]! - sy - this.y[i]!) / dtSub
         if (sc > 1e-8) {
-          const nx = solidDx[i]! / sc
-          const ny = solidDy[i]! / sc
+          const nx = sx / sc
+          const ny = sy / sc
+          // Normal velocity at least that of the solid surface it touches (0 for a static
+          // wall): no flow into the solid, and a moving body pushes the water with it.
+          const un = contact.hit[i] ? contact.ux[i]! * nx + contact.uy[i]! * ny : 0
           const vn = this.vx[i]! * nx + this.vy[i]! * ny
-          if (vn < 0) {
-            this.vx[i]! -= vn * nx
-            this.vy[i]! -= vn * ny
+          if (vn < un) {
+            this.vx[i]! += (un - vn) * nx
+            this.vy[i]! += (un - vn) * ny
           }
           const vt = this.vx[i]! * -ny + this.vy[i]! * nx
           const vtf = vt * 0.92
@@ -421,11 +468,20 @@ export class PbfFluidSolver {
   }
 
   /**
-   * Archimedes: clip each collider against a local free surface estimated from
-   * nearby particles (column maxes along −ĝ). The surface is taken from the
-   * **flanks** of the body, never from its own column — water riding on top
-   * would otherwise report the body as fully submerged and levitate it.
-   * Returns ids that received lift so splash impulses can stay off at rest.
+   * Hydrostatic pressure p = ρ g (h − s) integrated over the **wetted** boundary of each
+   * dynamic body (s = height along −ĝ, h = head of the water touching that boundary).
+   *
+   * - A boundary piece is wet only if particles sit next to it, so a dry body near water
+   *   (or behind a wall) gets nothing.
+   * - Head: the connected column of particles above the piece. Side / bottom pieces also
+   *   see `dBody`, the highest head of water touching the body's non-upward faces: under a
+   *   floating body there is no column, the pressure comes from the water around it.
+   *   Upward faces use only their own column, so a film riding on the roof pushes down
+   *   by its own (tiny) depth and cannot levitate the body.
+   * - A closed wetted contour gives exactly Archimedes; water held in a cup pushes its
+   *   bottom down and its walls out, so the container carries the water's weight.
+   *
+   * Returns ids that touched water so splash impulses can stay off at rest.
    */
   private applyBuoyancy(world: PhysicsWorld, bodies: readonly SceneBody[]): Set<BodyId> {
     this.buoyancyDebug.length = 0
@@ -433,16 +489,22 @@ export class PbfFluidSolver {
     const g = world.gravity
     const gmag = Math.hypot(g.x, g.y)
     if (gmag < 1e-8 || this.n === 0) return buoyant
-    const gx = g.x / gmag
-    const gy = g.y / gmag
-    const nx = -gx
-    const ny = -gy
+    const nx = -g.x / gmag
+    const ny = -g.y / gmag
     const tx = -ny
     const ty = nx
-    const colW = Math.max(this.spacing, 0.06)
-    const contactR = this.radius
+    const sp = this.spacing
+    const wetR = this.radius + sp * WET_REACH
+    const colHalf = sp * COLUMN_HALF_WIDTH
+    const gap = sp * COLUMN_GAP
+    const segLen = sp * SAMPLE_SPACING
     const gScaleOf = new Map(bodies.map((b) => [b.id, b.gravityScale]))
     const seen = new Set<BodyId>()
+    const bandS: number[] = []
+    const bandT: number[] = []
+    const bandI: number[] = []
+    const order: number[] = []
+    const near: number[] = []
 
     world.forEachBody((body) => {
       if (body.type !== 'dynamic') return
@@ -460,7 +522,7 @@ export class PbfFluidSolver {
         const oy = body.y + (col.offset?.y ?? 0)
         const ang = body.angle + (col.angle ?? 0)
         for (const verts of shapeToWorldPolygons(col.shape, ox, oy, ang)) {
-          polys.push(verts)
+          polys.push(ensureCCW(verts))
           for (const p of verts) {
             const t = p.x * tx + p.y * ty
             const s = p.x * nx + p.y * ny
@@ -473,85 +535,201 @@ export class PbfFluidSolver {
       }
       if (!polys.length || !Number.isFinite(tMin)) return
 
-      // Sample flanks well past the body; surface height must not come from the
-      // body's own column (under-body water + film riding on the top face).
-      const bodyPadT = Math.max(colW * 1.5, contactR * 2, (tMax - tMin) * 0.1)
-      const padT = Math.max(colW * 6, (tMax - tMin) * 0.5, bodyPadT + colW * 3, 0.35)
-      const bandT0 = tMin - padT
-      const bandT1 = tMax + padT
-      const colT0 = tMin - bodyPadT
-      const colT1 = tMax + bodyPadT
-      const surfaceArgs = {
-        x: this.x,
-        y: this.y,
-        n: this.n,
-        nx,
-        ny,
-        tMin: bandT0,
-        tMax: bandT1,
-        sMin: sMin - 1.5,
-        sMax: sMax + colW * 3,
-        columnWidth: colW,
-      }
-      // Prefer flanks. Fallback for tight cups with no usable side water: still
-      // reject the contact shell and any film above the body's top face.
-      let clipDRaw = estimateFreeSurfaceD({
-        ...surfaceArgs,
-        skip: (_i, _s, t) => t >= colT0 && t <= colT1,
-      })
-      if (clipDRaw === null) {
-        clipDRaw = estimateFreeSurfaceD({
-          ...surfaceArgs,
-          skip: (i, s, t) => {
-            if (particleInBodyShell(this.x[i]!, this.y[i]!, contactR, body, colliders)) {
-              return true
-            }
-            // Riding film: above the body, within its tangent span.
-            return s > sMax + contactR && t >= colT0 && t <= colT1
-          },
-        })
-      }
-      if (clipDRaw === null) return
-      // Body entirely above the live surface: drop lagged clip so a collapsing
-      // column cannot keep applying full Archimedes after the pool has fallen.
-      if (clipDRaw < sMin - colW * 0.5) {
-        this.surfaceD.delete(body.id)
-        this.forceMag.delete(body.id)
-        return
-      }
-      const prevD = this.surfaceD.get(body.id)
-      const blend =
-        prevD === undefined ? 1 : Math.abs(clipDRaw - prevD) > 0.3 ? 0.45 : SURFACE_BLEND
-      // Snap down with the pool (collapsed column); lag only on the way up so splash
-      // does not yank Archimedes.
-      const clipD =
-        prevD === undefined || clipDRaw < prevD ? clipDRaw : prevD + (clipDRaw - prevD) * blend
-      this.surfaceD.set(body.id, clipD)
-
-      let densSum = 0
-      let viscSum = 0
-      let densN = 0
+      // Band: the body's tangent span (± wet reach), any height from just below it up.
+      // `near`: band particles close enough to wet some part of the boundary.
+      bandS.length = 0
+      bandT.length = 0
+      bandI.length = 0
+      near.length = 0
       for (let i = 0; i < this.n; i++) {
         const px = this.x[i]!
         const py = this.y[i]!
         const t = px * tx + py * ty
-        if (t < bandT0 || t > bandT1) continue
+        if (t < tMin - wetR || t > tMax + wetR) continue
         const s = px * nx + py * ny
-        if (s < sMin - 1.5 || s > clipD + colW) continue
+        if (s < sMin - wetR) continue
+        bandI.push(i)
+        bandS.push(s)
+        bandT.push(t)
+        if (s <= sMax + wetR) near.push(i)
+      }
+      if (near.length < 2) return
+      order.length = bandI.length
+      for (let k = 0; k < order.length; k++) order[k] = k
+      order.sort((a, b) => bandS[a]! - bandS[b]!)
+
+      const rCol = this.radius
+      /** Particle i lies on the outer side of the face through (qx, qy) with normal m. */
+      const outside = (i: number, qx: number, qy: number, mx: number, my: number) =>
+        (this.x[i]! - qx) * mx + (this.y[i]! - qy) * my >= -rCol
+
+      /**
+       * Top of the connected particle column above a boundary piece, counting only
+       * particles on the outer side of its face (a side column must not climb onto the
+       * film riding on the roof), or null if none.
+       */
+      const columnHead = (
+        s: number,
+        t: number,
+        qx: number,
+        qy: number,
+        mx: number,
+        my: number,
+      ): number | null => {
+        let level = s
+        let found = false
+        for (const k of order) {
+          if (Math.abs(bandT[k]! - t) > colHalf) continue
+          const sk = bandS[k]!
+          if (sk < s - wetR) continue
+          if (!outside(bandI[k]!, qx, qy, mx, my)) continue
+          if (sk - level > gap) break
+          if (sk > level) level = sk
+          found = true
+        }
+        return found ? level : null
+      }
+
+      // Head of the water around the body: the connected column just outside each flank,
+      // climbed from below the body's base. Not the body's own faces: under a body there is
+      // no column (and particles squeezed into the floor would read 0), and a column over
+      // the roof is only the riding film.
+      const flankHead = (t: number): number | null => {
+        let level = sMin - wetR
+        let found = false
+        for (const k of order) {
+          if (Math.abs(bandT[k]! - t) > colHalf) continue
+          const sk = bandS[k]!
+          if (sk < sMin - wetR) continue
+          if (sk - level > gap) break
+          if (sk > level) level = sk
+          found = true
+        }
+        return found && level > sMin ? level : null
+      }
+      const leftHead = flankHead(tMin - sp)
+      const rightHead = flankHead(tMax + sp)
+      const dBody =
+        leftHead !== null && rightHead !== null
+          ? (leftHead + rightHead) / 2
+          : (leftHead ?? rightHead ?? -Infinity)
+
+      // Water on both flanks: the body floats or is submerged, so the closed-contour
+      // Archimedes model (calibrated, smoothed) applies. Pressure on the wetted faces is
+      // for the rest: containers, one-sided walls and dry bodies next to water.
+      // Hysteresis: a float stays in this model while one flank dips dry for a moment
+      // (sloshing); switching models every few steps kicks the body and pumps the water.
+      const both = leftHead !== null && rightHead !== null
+      const held = this.floatHold.get(body.id)
+      if (both) this.floatHold.set(body.id, 0)
+      else if (held !== undefined && held < FLOAT_HOLD_STEPS) this.floatHold.set(body.id, held + 1)
+      else this.floatHold.delete(body.id)
+      if (this.floatHold.has(body.id)) {
+        this.applyArchimedes(
+          world,
+          body,
+          colliders,
+          polys,
+          { tMin, tMax, sMin, sMax },
+          gScaleOf.get(body.id) ?? 1,
+          seen,
+          buoyant,
+        )
+        return
+      }
+
+      type Piece = {
+        qx: number
+        qy: number
+        s: number
+        t: number
+        mx: number
+        my: number
+        len: number
+      }
+      const wet: (Piece & { head: number | null; upward: boolean })[] = []
+      const wetR2 = wetR * wetR
+      for (const poly of polys) {
+        const m = poly.length
+        for (let e = 0; e < m; e++) {
+          const a = poly[e]!
+          const b = poly[(e + 1) % m]!
+          const ex = b.x - a.x
+          const ey = b.y - a.y
+          const len = Math.hypot(ex, ey)
+          if (len < 1e-9) continue
+          // Outward normal of a CCW polygon.
+          const mx = ey / len
+          const my = -ex / len
+          const pieces = Math.max(1, Math.ceil(len / segLen))
+          const pl = len / pieces
+          for (let k = 0; k < pieces; k++) {
+            const f = (k + 0.5) / pieces
+            const qx = a.x + ex * f
+            const qy = a.y + ey * f
+            let isWet = false
+            for (const i of near) {
+              const dx = this.x[i]! - qx
+              const dy = this.y[i]! - qy
+              // Outer side only: water behind a thin wall must not wet its far face.
+              if (dx * dx + dy * dy < wetR2 && dx * mx + dy * my >= -rCol) {
+                isWet = true
+                break
+              }
+            }
+            const s = qx * nx + qy * ny
+            const t = qx * tx + qy * ty
+            if (!isWet) continue
+            wet.push({
+              qx,
+              qy,
+              s,
+              t,
+              mx,
+              my,
+              len: pl,
+              head: columnHead(s, t, qx, qy, mx, my),
+              upward: mx * nx + my * ny > UPWARD_FACE,
+            })
+          }
+        }
+      }
+      if (!wet.length) return
+
+      let densSum = 0
+      let viscSum = 0
+      for (const i of near) {
         densSum += this.density[i]!
         viscSum += this.viscosity[i]!
-        densN++
       }
-      if (densN < 4) return
-      const ρ = densSum / densN
-      const μ = viscSum / densN
+      const ρ = densSum / near.length
+      const μ = viscSum / near.length
+      const gEff = gmag * (gScaleOf.get(body.id) ?? 1)
 
+      let fxP = 0
+      let fyP = 0
+      let tauP = 0
+      let surface = -Infinity
+      for (const w of wet) {
+        const h = w.upward ? (w.head ?? -Infinity) : Math.max(w.head ?? -Infinity, dBody)
+        if (h > surface) surface = h
+        if (!(h > w.s)) continue
+        const p = ρ * gEff * (h - w.s)
+        const dfx = -p * w.mx * w.len
+        const dfy = -p * w.my * w.len
+        fxP += dfx
+        fyP += dfy
+        tauP += (w.qx - body.comX) * dfy - (w.qy - body.comY) * dfx
+      }
+      if (!Number.isFinite(surface)) return
+
+      // Submerged part (below the highest wetting head) for drag and the debug centroid.
       let area = 0
       let cx = 0
       let cy = 0
       let clippedForDrag: Vec2[] = []
       for (const verts of polys) {
-        const clipped = clipHalfPlane(verts, nx, ny, clipD)
+        const clipped = clipHalfPlane(verts, nx, ny, surface)
         const a = polygonArea(clipped)
         if (a < 1e-8) continue
         const c = polygonCentroid(clipped)
@@ -560,68 +738,217 @@ export class PbfFluidSolver {
         area += a
         if (clipped.length > clippedForDrag.length) clippedForDrag = clipped
       }
-      if (area < 1e-8) return
-      cx /= area
-      cy /= area
+      if (area > 1e-8) {
+        cx /= area
+        cy /= area
+      } else {
+        cx = body.comX
+        cy = body.comY
+      }
 
-      const gScale = gScaleOf.get(body.id) ?? 1
-      const Fraw = ρ * area * gmag * gScale
-      const prevF = this.forceMag.get(body.id)
-      const weight = Math.max(1e-6, body.mass * gmag)
-      const fBlend =
-        prevF === undefined ? 1 : Math.abs(Fraw - prevF) > 0.3 * weight ? 0.45 : FORCE_BLEND
-      const F = prevF === undefined || Fraw < prevF ? Fraw : prevF + (Fraw - prevF) * fBlend
-      this.forceMag.set(body.id, F)
-      const fx = -gx * F
-      const fy = -gy * F
-      const drag = fluidDragForce(body.vx, body.vy, ρ, μ, clippedForDrag, area, {
-        inertia: body.mass,
-        dt: world.dt,
-      })
-      const torqueDamp = fluidTorqueDamp(ρ, area, body.omega, {
-        inertia: body.inertia,
-        dt: world.dt,
-      })
-      const bodySp = Math.hypot(body.vx, body.vy)
-      const almostStill = bodySp < BODY_REST_SPEED && Math.abs(body.omega) < BODY_REST_OMEGA
-      const residual = Math.abs(F - weight) / weight
-      const liftRatio = F / weight
-      // At rest: push through the COM (no torque). Body origin ≠ COM for asymmetric shapes.
-      const at = almostStill ? { x: body.comX, y: body.comY } : { x: cx, y: cy }
-      world.applyForce(body.id, fx + drag.x, fy + drag.y, at, false)
-      world.applyTorque(body.id, torqueDamp, false)
+      const drag =
+        area > 1e-8
+          ? fluidDragForce(body.vx, body.vy, ρ, μ, clippedForDrag, area, {
+              inertia: body.mass,
+              dt: world.dt,
+            })
+          : { x: 0, y: 0 }
+      const torqueDamp =
+        area > 1e-8
+          ? fluidTorqueDamp(ρ, area, body.omega, { inertia: body.inertia, dt: world.dt })
+          : 0
+      // Pressure resultant through the COM; its moment goes in as a torque. No lag and no
+      // velocity scaling: a lagged force pumps energy, and these bodies (containers,
+      // one-sided walls) are not floats to be settled.
+      world.applyForce(body.id, fxP + drag.x, fyP + drag.y, { x: body.comX, y: body.comY }, false)
+      world.applyTorque(body.id, tauP + torqueDamp, false)
       seen.add(body.id)
       buoyant.add(body.id)
-      // Wake a sunk floater so Archimedes can lift it; do not wake wet walls (lift ≪ mg).
-      if (liftRatio > 0.35 && residual > 0.5) {
-        world.wake(body.id)
-      } else if (liftRatio > 0.35 && residual < 0.35) {
-        world.setVelocity(body.id, body.vx * 0.92, body.vy * 0.92, body.omega * 0.88, false)
-        if (
-          almostStill &&
-          residual < 0.12 &&
-          liftRatio < 1.35 &&
-          bodySp < 0.04 &&
-          Math.abs(body.omega) < 0.04
-        ) {
-          world.setVelocity(body.id, 0, 0, 0, false)
-        }
-      }
       this.buoyancyDebug.push({
         bodyId: body.id,
         area,
-        cx: at.x,
-        cy: at.y,
-        fx: fx + drag.x,
-        fy: fy + drag.y,
+        cx,
+        cy,
+        fx: fxP + drag.x,
+        fy: fyP + drag.y,
       })
     })
     for (const id of [...this.surfaceD.keys()]) {
-      if (seen.has(id)) continue
-      this.surfaceD.delete(id)
-      this.forceMag.delete(id)
+      if (!seen.has(id)) this.surfaceD.delete(id)
+    }
+    for (const id of [...this.floatHold.keys()]) {
+      if (!seen.has(id)) this.floatHold.delete(id)
     }
     return buoyant
+  }
+
+  /**
+   * Archimedes for a body with water on both flanks (floating or submerged): clip it at
+   * a free surface estimated from the flanks, never from its own column, since water
+   * riding on top would otherwise report it fully submerged and levitate it. This is the
+   * calibrated model the floating tests and the rest heuristics are tuned against.
+   */
+  private applyArchimedes(
+    world: PhysicsWorld,
+    body: BodySnapshot,
+    colliders: ColliderDesc[],
+    polys: Vec2[][],
+    bounds: { tMin: number; tMax: number; sMin: number; sMax: number },
+    gScale: number,
+    seen: Set<BodyId>,
+    buoyant: Set<BodyId>,
+  ): void {
+    const { tMin, tMax, sMin, sMax } = bounds
+    const g = world.gravity
+    const gmag = Math.hypot(g.x, g.y)
+    const gx = g.x / gmag
+    const gy = g.y / gmag
+    const nx = -gx
+    const ny = -gy
+    const tx = -ny
+    const ty = nx
+    const colW = Math.max(this.spacing, 0.06)
+    const contactR = this.radius
+    // Sample flanks well past the body; surface height must not come from the
+    // body's own column (under-body water + film riding on the top face).
+    const bodyPadT = Math.max(colW * 1.5, contactR * 2, (tMax - tMin) * 0.1)
+    const padT = Math.max(colW * 6, (tMax - tMin) * 0.5, bodyPadT + colW * 3, 0.35)
+    const bandT0 = tMin - padT
+    const bandT1 = tMax + padT
+    const colT0 = tMin - bodyPadT
+    const colT1 = tMax + bodyPadT
+    const surfaceArgs = {
+      x: this.x,
+      y: this.y,
+      n: this.n,
+      nx,
+      ny,
+      tMin: bandT0,
+      tMax: bandT1,
+      sMin: sMin - 1.5,
+      sMax: sMax + colW * 3,
+      columnWidth: colW,
+    }
+    // Prefer flanks. Fallback for tight cups with no usable side water: still
+    // reject the contact shell and any film above the body's top face.
+    let clipDRaw = estimateFreeSurfaceD({
+      ...surfaceArgs,
+      skip: (_i, _s, t) => t >= colT0 && t <= colT1,
+    })
+    if (clipDRaw === null) {
+      clipDRaw = estimateFreeSurfaceD({
+        ...surfaceArgs,
+        skip: (i, s, t) => {
+          if (particleInBodyShell(this.x[i]!, this.y[i]!, contactR, body, colliders)) {
+            return true
+          }
+          // Riding film: above the body, within its tangent span.
+          return s > sMax + contactR && t >= colT0 && t <= colT1
+        },
+      })
+    }
+    if (clipDRaw === null) return
+    // Body entirely above the live surface: drop lagged clip so a collapsing
+    // column cannot keep applying full Archimedes after the pool has fallen.
+    if (clipDRaw < sMin - colW * 0.5) {
+      this.surfaceD.delete(body.id)
+      return
+    }
+    const prevD = this.surfaceD.get(body.id)
+    const blend = prevD === undefined ? 1 : Math.abs(clipDRaw - prevD) > 0.3 ? 0.45 : SURFACE_BLEND
+    // Snap down with the pool (collapsed column); lag only on the way up so splash
+    // does not yank Archimedes.
+    const clipD =
+      prevD === undefined || clipDRaw < prevD ? clipDRaw : prevD + (clipDRaw - prevD) * blend
+    this.surfaceD.set(body.id, clipD)
+
+    let densSum = 0
+    let viscSum = 0
+    let densN = 0
+    for (let i = 0; i < this.n; i++) {
+      const px = this.x[i]!
+      const py = this.y[i]!
+      const t = px * tx + py * ty
+      if (t < bandT0 || t > bandT1) continue
+      const s = px * nx + py * ny
+      if (s < sMin - 1.5 || s > clipD + colW) continue
+      densSum += this.density[i]!
+      viscSum += this.viscosity[i]!
+      densN++
+    }
+    if (densN < 4) return
+    const ρ = densSum / densN
+    const μ = viscSum / densN
+
+    let area = 0
+    let cx = 0
+    let cy = 0
+    let clippedForDrag: Vec2[] = []
+    for (const verts of polys) {
+      const clipped = clipHalfPlane(verts, nx, ny, clipD)
+      const a = polygonArea(clipped)
+      if (a < 1e-8) continue
+      const c = polygonCentroid(clipped)
+      cx += c.x * a
+      cy += c.y * a
+      area += a
+      if (clipped.length > clippedForDrag.length) clippedForDrag = clipped
+    }
+    if (area < 1e-8) return
+    cx /= area
+    cy /= area
+
+    // No lag on the lift: a lagged restoring force feeds energy into the bobbing (the old
+    // EMA kept floats oscillating). Heave and roll damping come from wave radiation, as in
+    // the analytic tank; they only see velocities, so the equilibrium draft is unchanged.
+    const F = ρ * area * gmag * gScale
+    const weight = Math.max(1e-6, body.mass * gmag)
+    let waterline = 0
+    for (const verts of polys) waterline += planeSpan(verts, nx, ny, clipD)
+    const wave = waveRadiationForce(
+      body.vx,
+      body.vy,
+      nx,
+      ny,
+      ρ,
+      gmag * gScale,
+      waterline,
+      body.mass,
+      world.dt,
+      SPH_HEAVE_DAMPING,
+    )
+    const fx = -gx * F + wave.x
+    const fy = -gy * F + wave.y
+    const drag = fluidDragForce(body.vx, body.vy, ρ, μ, clippedForDrag, area, {
+      inertia: body.mass,
+      dt: world.dt,
+    })
+    const torqueDamp = fluidTorqueDamp(ρ, area, body.omega, {
+      inertia: body.inertia,
+      dt: world.dt,
+    })
+    // Always through the centre of buoyancy: that moment is what rights a tilted float.
+    world.applyForce(body.id, fx + drag.x, fy + drag.y, { x: cx, y: cy }, false)
+    // Roll radiation damping: a fraction of critical against the waterplane roll stiffness
+    // k = ρ g w³ / 12 (2D), capped like `stableDamping` so it never reverses ω.
+    const kRoll = (ρ * gmag * gScale * waterline ** 3) / 12
+    const cRoll =
+      kRoll > 0 && body.inertia > 0 ? 2 * SPH_ROLL_DAMPING * Math.sqrt(kRoll * body.inertia) : 0
+    const roll = -Math.min(cRoll, body.inertia / world.dt) * body.omega
+    world.applyTorque(body.id, torqueDamp + roll, false)
+    seen.add(body.id)
+    buoyant.add(body.id)
+    // Wake a sunk floater so Archimedes can lift it; do not wake wet walls (lift ≪ mg).
+    const liftRatio = F / weight
+    if (liftRatio > 0.35 && Math.abs(F - weight) / weight > 0.5) world.wake(body.id)
+    this.buoyancyDebug.push({
+      bodyId: body.id,
+      area,
+      cx,
+      cy,
+      fx: fx + drag.x,
+      fy: fy + drag.y,
+    })
   }
 
   private ensureCap(need: number): void {

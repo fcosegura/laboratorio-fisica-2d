@@ -271,7 +271,16 @@ export type CachedCollider = {
 export type CachedSolid = {
   id: BodyId
   colliders: CachedCollider[]
+  /** Rigid motion, for the velocity of the contact point (solids are static within a step). */
+  vx: number
+  vy: number
+  omega: number
+  comX: number
+  comY: number
 }
+
+/** Per-particle velocity of the solid surface it touched this substep (`hit` = 1). */
+export type ContactVelocity = { ux: Float64Array; uy: Float64Array; hit: Uint8Array }
 
 /** Snapshot non-sensor colliders with AABBs expanded by `radius`. */
 export function cacheSolids(world: PhysicsWorld, radius: number): CachedSolid[] {
@@ -295,7 +304,17 @@ export function cacheSolids(world: PhysicsWorld, radius: number): CachedSolid[] 
         maxY: box.maxY,
       })
     }
-    if (colliders.length) out.push({ id: body.id, colliders })
+    if (colliders.length) {
+      out.push({
+        id: body.id,
+        colliders,
+        vx: body.vx,
+        vy: body.vy,
+        omega: body.omega,
+        comX: body.comX,
+        comY: body.comY,
+      })
+    }
   })
   return out
 }
@@ -310,6 +329,7 @@ export function collideSolidCached(
   bodyImpulse: Map<BodyId, BodyImpulse>,
   fromX: number,
   fromY: number,
+  contact?: ContactVelocity,
 ): void {
   let x = px[i]!
   let y = py[i]!
@@ -324,6 +344,11 @@ export function collideSolidCached(
       x = hit.x
       y = hit.y
       accumulateImpulse(bodyImpulse, solid.id, hit.cx, hit.cy, jx, jy)
+      if (contact) {
+        contact.ux[i] = solid.vx - solid.omega * (hit.cy - solid.comY)
+        contact.uy[i] = solid.vy + solid.omega * (hit.cx - solid.comX)
+        contact.hit[i] = 1
+      }
     }
   }
 

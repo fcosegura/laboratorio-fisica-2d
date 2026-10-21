@@ -82,12 +82,17 @@ Contratos:
 - Arrastre del fluido: `stableDamping` limita `c ≤ m/dt` (nunca invierte ni amplifica v). Por debajo del límite es el explícito sin cambios: las calibraciones de SPH y tanques dependen de ello.
 - Polígono hidrostático de círculo / cápsula: escalado para conservar el área exacta (umbral de flotación = ρ_fluido).
 - SPH: un solo kernel (`h`, `ρ0`) para todas las partículas; un segundo volumen reutiliza el espaciado vivo.
+- SPH → sólidos (`applyBuoyancy`), modelo híbrido:
+  - **Agua en ambos flancos** (flotador o sumergido; con histéresis `FLOAT_HOLD_STEPS` para el oleaje): Arquímedes recortado en la superficie estimada en los flancos (`applyArchimedes`), aplicado en el centro de carena. Sin retraso en la fuerza; cabeceo y balanceo amortiguados por radiación de olas (`SPH_HEAVE_DAMPING`, `SPH_ROLL_DAMPING`), que solo ven velocidades y no mueven el calado.
+  - **El resto** (recipientes, paredes con agua a un lado, cuerpos secos junto al agua): presión hidrostática integrada solo sobre el contorno **mojado**. El vaso soporta el peso de su agua; un cuerpo seco tras una pared no recibe nada. Las columnas de cada tramo solo cuentan partículas del lado exterior de su cara.
+- SPH ↔ colisión: una corrección de posición contra un sólido nunca se convierte en velocidad (eso lanzaba chorros desde las esquinas). Una partícula en contacto toma como mínimo la velocidad normal del punto del sólido (`ContactVelocity`), así un cuerpo en movimiento sigue empujando el agua.
 
 ### Simplificaciones deliberadas (documentadas, no son bugs)
 
 - SPH: velocidad de partícula limitada a 8 m/s (`V_MAX`); el agua cae más despacio que un sólido desde más de ~3 m.
-- SPH: un cuerpo que flota cerca del equilibrio recibe ×0,92 de velocidad por paso y se fija a 0 al asentarse. Amortiguación no física, visible en la gráfica de energía.
-- SPH: el acoplamiento partícula → cuerpo usa `COUPLING = 0.1` con tope `MAX_BODY_IMPULSE`; no conserva momento. La sustentación viene de Arquímedes, no de la presión SPH.
+- SPH: el acoplamiento partícula → cuerpo usa `COUPLING = 0.1` con tope `MAX_BODY_IMPULSE`; no conserva momento. La sustentación viene de Arquímedes / presión hidrostática, no de la presión SPH.
+- SPH: el agua es compresible (≈40 % a reposo en un vaso; ρ/ρ0 ≈ 1,4). El volumen no se conserva y los charcos quedan más bajos. Pendiente (rigidez de presión / subpasos).
+- Flotadores (tanque analítico y SPH): el amortiguamiento por radiación de olas es un modelo, no ondas simuladas.
 - El empuje se multiplica por el `gravityScale` del cuerpo (en rigor depende de la gravedad del fluido). Elección pedagógica: la fracción sumergida en equilibrio no depende de `gravityScale`.
 - Combinación de contacto: rozamiento `Min`, restitución `Max` (el hielo desliza, la goma rebota), no la media geométrica habitual.
 - La amortiguación lineal / angular del cuerpo es «aire», no propiedad del material: los cuerpos dibujados nacen con 0 y cambiar de material no la toca. Los experimentos con fluido la fijan a mano.

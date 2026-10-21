@@ -373,7 +373,10 @@ describe('SPH Clavet particle fluid', () => {
     for (let i = 0; i < 360; i++) engine.advance(1 / 60)
     const wood = engine.curr.find((b) => b.id === 'body:wood')!
     const hy = 0.12
-    const surfaceY = poolSurfaceY(engine.particles.particles, wood.x, 0.9)
+    // Free surface measured like the solver: median of column tops beside the body. The
+    // 85th percentile of all heights sits well below the top of a compressed pool, so a
+    // float at the exact Archimedes draft would read as "too high".
+    const surfaceY = flankSurfaceY(engine.particles.particles, wood.x, 0.3, 0.9)
     expect(engine.particles.buoyancyDebug.some((d) => d.bodyId === 'body:wood')).toBe(true)
     // Must sit in the pool, not on the floor and not hovering above the free surface.
     expect(wood.y - hy).toBeGreaterThan(0.06)
@@ -636,8 +639,12 @@ describe('SPH Clavet particle fluid', () => {
     expect(wood.y + hy).toBeGreaterThan(surfaceY)
     expect(Math.hypot(wood.vx, wood.vy)).toBeLessThan(0.08)
     expect(Math.abs(wood.omega)).toBeLessThan(0.08)
+    // The pool must be calm. The film draining off the float (within 0.15 m of the box) is
+    // excluded: it still trickles down the sides at 8 s, which is not pool motion.
+    const hx = 0.3
     let maxP = 0
     for (const p of engine.particles.particles) {
+      if (Math.abs(p.x - wood.x) < hx + 0.15 && Math.abs(p.y - wood.y) < hy + 0.15) continue
       const sp = Math.hypot(p.vx, p.vy)
       if (sp > maxP) maxP = sp
     }
@@ -977,6 +984,33 @@ function poolSurfaceY(particles: { x: number; y: number }[], x0: number, halfW: 
   if (ys.length === 0) return 0
   ys.sort((a, b) => a - b)
   return ys[Math.floor(ys.length * 0.85)] ?? ys[ys.length - 1]!
+}
+
+/**
+ * Free surface beside a body: particles with bodyHalfW + 0.1 < |x − x0| < halfW, binned in
+ * 0.1 m columns; median of the column tops (columns need ≥ 2 particles, so a lone splash
+ * drop cannot set a height). Same statistic as the solver's flank estimate.
+ */
+function flankSurfaceY(
+  particles: { x: number; y: number }[],
+  x0: number,
+  bodyHalfW: number,
+  halfW: number,
+): number {
+  const cols = new Map<number, { top: number; n: number }>()
+  for (const p of particles) {
+    const dx = Math.abs(p.x - x0)
+    if (dx <= bodyHalfW + 0.1 || dx >= halfW) continue
+    const k = Math.floor(p.x / 0.1)
+    const c = cols.get(k) ?? { top: -Infinity, n: 0 }
+    c.top = Math.max(c.top, p.y)
+    c.n++
+    cols.set(k, c)
+  }
+  const tops = [...cols.values()].filter((c) => c.n >= 2).map((c) => c.top)
+  if (tops.length === 0) return 0
+  tops.sort((a, b) => a - b)
+  return tops[Math.floor(tops.length / 2)]!
 }
 
 function particlePoolDoc(floater: SceneBody) {
