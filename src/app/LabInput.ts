@@ -242,7 +242,7 @@ export class LabInput {
       if (s.mode === 'force') this.applySustainedForce()
       return
     }
-    if (s.kind === 'measuring' || s.kind === 'selecting') {
+    if (s.kind === 'measuring' || s.kind === 'selecting' || s.kind === 'placingThruster') {
       this.lab.state = { ...s, current: world }
       return
     }
@@ -322,6 +322,11 @@ export class LabInput {
     if (s.kind === 'joining') {
       this.commitJoin(s, world)
     }
+    if (s.kind === 'placingThruster') {
+      this.lab.state = { kind: 'idle' }
+      this.commitThruster(s, world)
+      return
+    }
     if (s.kind === 'rotating') {
       this.lab.state = { kind: 'idle' }
       // Same rule as the inspector: persist the authored angle, apply only that field.
@@ -382,6 +387,30 @@ export class LabInput {
     this.lab.engine.persistentForces = [
       { bodyId: s.bodyId, x: origin.x, y: origin.y, fx: f.x, fy: f.y },
     ]
+  }
+
+  /**
+   * Drag from the anchor sets direction and size of the thruster, with the sustained-force
+   * scale (`dragToForce`). Stored in the body frame: it turns with the body (a rocket).
+   */
+  private commitThruster(
+    s: Extract<InteractionState, { kind: 'placingThruster' }>,
+    world: Vec2,
+  ): void {
+    const pose = this.lab.poseOf(s.bodyId)
+    const origin = forceAnchorWorld(s.local, pose)
+    const dx = world.x - origin.x
+    const dy = world.y - origin.y
+    if (Math.hypot(dx, dy) < MIN_FORCE_DRAG) return
+    const f = dragToForce(this.lab.bodyMass(s.bodyId), dx, dy)
+    this.lab.commitPatch(s.bodyId, {
+      thruster: {
+        force: Number(Math.hypot(f.x, f.y).toFixed(1)),
+        angle: Math.atan2(dy, dx) - pose.angle,
+        anchor: { x: s.local.x, y: s.local.y },
+        followsBody: true,
+      },
+    })
   }
 
   private hitDynamic(x: number, y: number): string | null {
@@ -579,6 +608,7 @@ export class LabInput {
       g: ToolId.polygon,
       l: ToolId.line,
       f: ToolId.force,
+      t: ToolId.thruster,
       m: ToolId.measure,
       w: ToolId.fluid,
       e: ToolId.spill,

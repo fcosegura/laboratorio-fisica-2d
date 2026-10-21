@@ -46,6 +46,13 @@ export type InteractionState =
       current: Vec2
       mode: 'impulse' | 'force'
     }
+  | {
+      kind: 'placingThruster'
+      bodyId: BodyId
+      /** Anchor in the body's local space. */
+      local: Vec2
+      current: Vec2
+    }
   | { kind: 'measuring'; start: Vec2; current: Vec2 }
   | { kind: 'joining'; bodyA: BodyId; anchorA: Vec2; current: Vec2 }
   | { kind: 'pinching'; startDist: number; origPpm: number }

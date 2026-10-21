@@ -5,6 +5,7 @@ import {
   type SceneBody,
   type SceneFluidRegion,
   type SceneJoint,
+  type SceneWind,
   type VizLayers,
 } from '../scene/document.ts'
 import { Tool, type Tool as ToolId } from '../interaction/tools.ts'
@@ -82,6 +83,8 @@ export type LabUiState = {
   canRedo: boolean
   spaceHeld: boolean
   gravityPreset: GravityPreset
+  /** Aire del mundo (null = vacío). */
+  wind: SceneWind | null
   inspectorOpen: boolean
   graphsOpen: boolean
   debugHud: boolean
@@ -116,6 +119,7 @@ export const useLabStore = create<LabUiState>(() => ({
   canRedo: false,
   spaceHeld: false,
   gravityPreset: 'earth',
+  wind: null,
   inspectorOpen: true,
   graphsOpen: true,
   debugHud: true,

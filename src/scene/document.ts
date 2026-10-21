@@ -39,7 +39,37 @@ export type SceneBody = {
   lockRotation: boolean
   shape: PhysicsShape
   color?: number
+  /** Constant force applied every physics step while the body is dynamic. */
+  thruster?: SceneThruster
 }
+
+/** Propulsor: fuerza constante sobre un cuerpo, en su propio marco o en el del mundo. */
+export type SceneThruster = {
+  /** Newtons. */
+  force: number
+  /** Direction of the force, radians: body frame if `followsBody`, else world frame. */
+  angle: number
+  /** Application point in body-local coordinates (m). Off the COM it also gives torque. */
+  anchor: Vec2
+  followsBody: boolean
+}
+
+/**
+ * Air around the bodies. Absent = vacuum (no air drag at all). Present with zero speed =
+ * still air: quadratic drag only. The wind velocity is uniform; gusts modulate its speed.
+ */
+export type SceneWind = {
+  /** Mean wind speed, m/s. */
+  speed: number
+  /** Direction the wind blows towards, radians (0 = +x, π/2 = up). */
+  direction: number
+  /** kg/m³ (with the 1 m thickness of the 2D world). */
+  airDensity: number
+  /** Gust amplitude as a fraction of the mean speed (0 = steady wind). */
+  gust: number
+}
+
+export const DEFAULT_AIR_DENSITY = 1.2
 
 /** Analytic hydrostatic tank (Archimedes + drag). Flat free surface; does not spill. */
 export type SceneFluidRegion = {
@@ -122,6 +152,7 @@ export type SceneDocument = {
     gravity: Vec2
     gravityPreset: GravityPreset
     timeScale: number
+    wind?: SceneWind
   }
   bodies: SceneBody[]
   joints: SceneJoint[]

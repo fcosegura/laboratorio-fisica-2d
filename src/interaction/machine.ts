@@ -128,6 +128,21 @@ export function reduceDown(
     }
   }
 
+  if (tool === 'thruster') {
+    if (!hitDynamic) return { state }
+    const pose = poseOf(hitDynamic)
+    return {
+      state: {
+        kind: 'placingThruster',
+        bodyId: hitDynamic,
+        local: inverseTransformPoint({ x: 0, y: 0 }, world, pose),
+        current: world,
+      },
+      selected: [hitDynamic],
+      pushUi: true,
+    }
+  }
+
   if (tool === 'measure') {
     return {
       state: { kind: 'measuring', start: world, current: world },
@@ -184,6 +199,7 @@ export function reduceMove(state: InteractionState, world: Vec2): InteractionSta
   if (
     state.kind === 'creating' ||
     state.kind === 'applyingForce' ||
+    state.kind === 'placingThruster' ||
     state.kind === 'measuring' ||
     state.kind === 'selecting' ||
     state.kind === 'joining' ||

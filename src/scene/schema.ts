@@ -35,6 +35,18 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
       gravity: vec2,
       gravityPreset: z.enum(['earth', 'moon', 'mars', 'zero', 'custom']),
       timeScale: num.min(PROPERTY_DESCRIPTORS.timeScale.min!).max(PROPERTY_DESCRIPTORS.timeScale.max!),
+      wind: z
+        .object({
+          speed: num
+            .min(PROPERTY_DESCRIPTORS.windSpeed.min)
+            .max(PROPERTY_DESCRIPTORS.windSpeed.max),
+          direction: num,
+          airDensity: num
+            .min(PROPERTY_DESCRIPTORS.airDensity.min)
+            .max(PROPERTY_DESCRIPTORS.airDensity.max),
+          gust: num.min(0).max(PROPERTY_DESCRIPTORS.windGustPct.max / 100),
+        })
+        .optional(),
     }),
     bodies: z.array(
       z.object({
@@ -61,6 +73,16 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         lockRotation: z.boolean(),
         shape,
         color: z.number().int().optional(),
+        thruster: z
+          .object({
+            force: num
+              .min(PROPERTY_DESCRIPTORS.thrustForce.min)
+              .max(PROPERTY_DESCRIPTORS.thrustForce.max),
+            angle: num,
+            anchor: vec2,
+            followsBody: z.boolean(),
+          })
+          .optional(),
       }),
     ),
     joints: z.array(

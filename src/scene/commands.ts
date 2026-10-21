@@ -5,6 +5,7 @@ import type {
   SceneFluidRegion,
   SceneFluidVolume,
   SceneJoint,
+  SceneWind,
 } from './document.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 
@@ -91,13 +92,25 @@ export class UpdateBodyCommand implements Command {
     if (!this.prev) {
       this.prev = structuredClone(body)
     }
-    Object.assign(body, this.patch)
+    assignOptional(body, this.patch)
   }
   invert(doc: SceneDocument): void {
     const body = doc.bodies.find((b) => b.id === this.id)
     if (body && this.prev) {
-      Object.assign(body, this.prev)
+      // A key the patch added (e.g. `thruster`) is absent from `prev`: undo removes it.
+      for (const k of Object.keys(this.patch) as (keyof SceneBody)[]) {
+        if (!(k in this.prev)) delete (body as Partial<SceneBody>)[k]
+      }
+      assignOptional(body, this.prev)
     }
+  }
+}
+
+/** `Object.assign` where an `undefined` value removes the (optional) key instead. */
+function assignOptional<T extends object>(target: T, patch: Partial<T>): void {
+  for (const k of Object.keys(patch) as (keyof T)[]) {
+    if (patch[k] === undefined) delete target[k]
+    else target[k] = structuredClone(patch[k]) as T[keyof T]
   }
 }
 
@@ -286,6 +299,8 @@ export type WorldPatch = {
   gravity?: Vec2
   gravityPreset?: GravityPreset
   timeScale?: number
+  /** `null` removes the air (vacuum); `undefined` leaves it untouched. */
+  wind?: SceneWind | null
 }
 
 export class SetWorldCommand implements Command {
@@ -301,16 +316,19 @@ export class SetWorldCommand implements Command {
         gravity: { ...doc.world.gravity },
         gravityPreset: doc.world.gravityPreset,
         timeScale: doc.world.timeScale,
+        wind: doc.world.wind ? structuredClone(doc.world.wind) : null,
       }
     }
-    if (this.patch.gravity) doc.world.gravity = { ...this.patch.gravity }
-    if (this.patch.gravityPreset !== undefined) doc.world.gravityPreset = this.patch.gravityPreset
-    if (this.patch.timeScale !== undefined) doc.world.timeScale = this.patch.timeScale
+    this.write(doc, this.patch)
   }
   invert(doc: SceneDocument): void {
-    if (!this.prev) return
-    if (this.prev.gravity) doc.world.gravity = { ...this.prev.gravity }
-    if (this.prev.gravityPreset !== undefined) doc.world.gravityPreset = this.prev.gravityPreset
-    if (this.prev.timeScale !== undefined) doc.world.timeScale = this.prev.timeScale
+    if (this.prev) this.write(doc, this.prev)
+  }
+  private write(doc: SceneDocument, patch: WorldPatch): void {
+    if (patch.gravity) doc.world.gravity = { ...patch.gravity }
+    if (patch.gravityPreset !== undefined) doc.world.gravityPreset = patch.gravityPreset
+    if (patch.timeScale !== undefined) doc.world.timeScale = patch.timeScale
+    if (patch.wind === null) delete doc.world.wind
+    else if (patch.wind !== undefined) doc.world.wind = structuredClone(patch.wind)
   }
 }

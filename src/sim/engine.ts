@@ -11,6 +11,7 @@ import { pickBody } from '../scene/picking.ts'
 import { AnalyticFluidSolver } from '../fluids/analytic/AnalyticFluid.ts'
 import { PbfFluidSolver } from '../fluids/pbf/PbfFluid.ts'
 import { Clock } from './clock.ts'
+import { thrusterWorld, windForce } from './forces.ts'
 import { DataRecorder } from './recorder.ts'
 
 export type AppliedForce = {
@@ -281,6 +282,7 @@ export class SimulationEngine {
     for (const f of this.persistentForces) {
       this.world.applyForce(f.bodyId, f.fx, f.fy, { x: f.x, y: f.y })
     }
+    this.applyThrustersAndWind(this.world, stepTime - PHYSICS_DT)
     if (this.grab) this.applyGrab(this.world, this.grab)
     const t0 = performance.now()
     // Analytic tanks, then PBF particles (distinct models).
@@ -297,6 +299,33 @@ export class SimulationEngine {
     this.recorder.sample(stepTime, PHYSICS_DT, this.doc.world.gravity, this.curr)
     this.timings.fluids = t1 - t0
     this.timings.physics = t2 - t1
+  }
+
+  /**
+   * Authored constant forces, read from the document every step from the live pose at the
+   * start of the step: thrusters (constant in the body or world frame) and air drag / wind.
+   * Both go to `appliedForces` so the force layer shows them.
+   */
+  private applyThrustersAndWind(world: PhysicsWorld, t: number): void {
+    const wind = this.doc.world.wind
+    for (const body of this.doc.bodies) {
+      if (body.type !== 'dynamic') continue
+      if (!body.thruster && !wind) continue
+      const snap = this.currMap.get(body.id)
+      if (!snap) continue
+      if (body.thruster && body.thruster.force > 0) {
+        const f = thrusterWorld(body.thruster, snap)
+        world.applyForce(body.id, f.fx, f.fy, { x: f.x, y: f.y })
+        this.appliedForces.push({ bodyId: body.id, ...f })
+      }
+      if (wind) {
+        const f = windForce(wind, body.shape, snap, t)
+        if (f.x === 0 && f.y === 0) continue
+        const at = { x: snap.comX, y: snap.comY }
+        world.applyForce(body.id, f.x, f.y, at)
+        this.appliedForces.push({ bodyId: body.id, x: at.x, y: at.y, fx: f.x, fy: f.y })
+      }
+    }
   }
 
   /**

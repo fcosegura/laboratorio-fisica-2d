@@ -74,6 +74,9 @@ Contratos:
 - `RapierWorld`: guarda `freed`; todos los métodos públicos deben no-op o devolver vacío tras `destroy()`. `addBody` con id existente elimina antes.
 - `PixiRenderer.init()` crea los contenedores. Tras `destroy()`, `draw()` no debe tocar nodos destruidos.
 - `appliedForces` se vacía al inicio de cada `physicsStep`. La fuerza sostenida va en `persistentForces`. El arrastre en Play va en `engine.grab`: muelle críticamente amortiguado hacia el cursor + compensación de gravedad, recalculado en cada paso con la velocidad viva (no lo congeles en `pointermove`).
+- Propulsor y viento (`src/sim/forces.ts`), leídos del documento en cada `physicsStep` desde la pose viva al inicio del paso, y empujados a `appliedForces`:
+  - `SceneBody.thruster` (opcional): fuerza constante en N, dirección en el marco del cuerpo (`followsBody`, cohete) o del mundo, punto de aplicación local (fuera del CM da par). Herramienta 🚀 (T) o inspector.
+  - `world.wind` (opcional): sin él, vacío como antes. Con él, arrastre `½ρC_dA|u|u`, `u = viento − v_CM`, aplicado en el CM; `A` = anchura proyectada de la forma perpendicular a `u`. Con viento 0 queda el rozamiento del aire. Tope `c ≤ m/dt` (como `stableDamping`). Ráfagas: tres senos inconmensurables que viajan con el viento.
 - Undo / redo: `engine.syncWorld(prev, next)` aplica solo el diff (altas, bajas, campos). `applyBodyChange` es el único sitio que decide qué campo reconstruye el cuerpo (`REBUILD_KEYS`) y cuál se aplica en vivo; `commitPatch` lo usa también.
 - `History.begin()` / `commit()` / `abort()`: varias mutaciones = un solo Ctrl+Z.
 - Picking: `engine.bodyAt` usa `pointHit` de Rapier y, si falla (pausa, sensores), `pickBody` sobre la geometría de la escena.
@@ -103,6 +106,7 @@ Contratos:
 - El empuje se multiplica por el `gravityScale` del cuerpo (en rigor depende de la gravedad del fluido). Elección pedagógica: la fracción sumergida en equilibrio no depende de `gravityScale`.
 - Combinación de contacto: rozamiento `Min`, restitución `Max` (el hielo desliza, la goma rebota), no la media geométrica habitual.
 - La amortiguación lineal / angular del cuerpo es «aire», no propiedad del material: los cuerpos dibujados nacen con 0 y cambiar de material no la toca. Los experimentos con fluido la fijan a mano.
+- Viento: `C_d = 1,2` para toda forma; fuerza en el CM (sin par aerodinámico, sin sombra entre cuerpos); actúa también sobre cuerpos sumergidos; no actúa sobre las partículas de fluido.
 - La Ep del registrador usa la gravedad global; con `gravityScale ≠ 1` la energía total mostrada no se conserva.
 
 ## Interacción y UI

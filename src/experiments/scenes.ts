@@ -655,6 +655,85 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
       return doc
     },
   },
+  {
+    id: 'wind',
+    title: 'Viento',
+    build: () => {
+      const doc = base(
+        'Viento',
+        'Viento de 10 m/s con ráfagas. Arrastre F = ½ρC_dA|u|u: el péndulo se inclina hasta ' +
+          'tan θ = F/mg, la bola ligera rueda y el bloque de acero no desliza.',
+      )
+      doc.world.wind = { speed: 10, direction: 0, airDensity: 1.2, gust: 0.3 }
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 10, 0.25, 'stone', { type: 'fixed' }),
+        box('body:wall', 'Pared', 9.8, 1.5, 0.2, 1.5, 'stone', { type: 'fixed' }),
+        box('body:anchor', 'Anclaje', 3, 5, 0.12, 0.12, 'metal', { type: 'fixed' }),
+        ball('body:bob', 'Péndulo ligero', 3, 3, 0.3, 'cork', {
+          density: 30,
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
+        ball('body:light', 'Bola ligera', -6, 0.35, 0.35, 'cork', {
+          density: 30,
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
+        box('body:steel', 'Bloque de acero', -8.5, 0.3, 0.3, 0.3, 'metal'),
+        box('body:plate', 'Placa', -7, 6, 0.4, 0.04, 'cork', {
+          density: 20,
+          angle: 0.2,
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
+      ]
+      doc.joints = [
+        {
+          id: 'joint:bob',
+          kind: 'revolute',
+          bodyA: 'body:anchor',
+          bodyB: 'body:bob',
+          anchorA: { x: 0, y: 0 },
+          anchorB: { x: 0, y: 2 },
+        },
+      ]
+      doc.camera = { x: 0, y: 3, pixelsPerMeter: 40 }
+      doc.visualization.force = true
+      doc.visualization.contacts = false
+      return doc
+    },
+  },
+  {
+    id: 'constant-force',
+    title: 'Fuerza constante (F = m·a)',
+    build: () => {
+      const doc = base(
+        'Fuerza constante',
+        'Dos discos sin rozamiento empujados por el mismo propulsor de 20 N: el de 10 kg ' +
+          'acelera a 2 m/s², el de 20 kg a 1 m/s². Observa vx(t) en las gráficas.',
+      )
+      const puck = (id: string, name: string, y: number, mass: number) =>
+        box(id, name, -17, y, 0.4, 0.25, 'ice', {
+          massMode: 'explicit',
+          mass,
+          friction: 0,
+          linearDamping: 0,
+          angularDamping: 0,
+          lockRotation: true,
+          thruster: { force: 20, angle: 0, anchor: { x: 0, y: 0 }, followsBody: false },
+        })
+      doc.bodies = [
+        box('body:ground', 'Hielo', 0, -0.25, 20, 0.25, 'ice', { type: 'fixed', friction: 0 }),
+        box('body:lane', 'Separador', 0, 1.1, 20, 0.05, 'ice', { type: 'fixed', friction: 0 }),
+        box('body:wall', 'Tope', 19.8, 1.5, 0.2, 1.5, 'stone', { type: 'fixed' }),
+        puck('body:light', 'Disco 10 kg', 0.25, 10),
+        puck('body:heavy', 'Disco 20 kg', 1.4, 20),
+      ]
+      doc.camera = { x: 1, y: 1.5, pixelsPerMeter: 14 }
+      doc.visualization.velocity = true
+      return doc
+    },
+  },
 ]
 
 export function experimentById(id: string): SceneDocument | null {

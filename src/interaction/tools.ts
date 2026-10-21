@@ -6,6 +6,7 @@ export const Tool = {
   polygon: 'polygon',
   line: 'line',
   force: 'force',
+  thruster: 'thruster',
   measure: 'measure',
   fluid: 'fluid',
   spill: 'spill',
@@ -33,6 +34,12 @@ export const TOOL_META: {
     group: 'create',
   },
   { id: 'force', label: 'Fuerza', hint: 'F · arrastra; Mayús sostiene', group: 'phys' },
+  {
+    id: 'thruster',
+    label: 'Propulsor',
+    hint: 'T · arrastra sobre un cuerpo: fuerza constante',
+    group: 'phys',
+  },
   { id: 'measure', label: 'Medir', hint: 'M', group: 'phys' },
   { id: 'joint', label: 'Unir', hint: 'J · arrastra de un cuerpo a otro', group: 'phys' },
 ]

@@ -4,10 +4,13 @@ import { useLabStore } from '../app/store.ts'
 import { applySolidPreset } from '../materials/applyPreset.ts'
 import { FLUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
 import {
+  DEFAULT_AIR_DENSITY,
   JOINT_KIND_META,
   type BodyType,
   type MassMode,
+  type SceneBody,
   type SceneJoint,
+  type SceneWind,
 } from '../scene/document.ts'
 import { DEFAULT_SPRING_DAMPING, DEFAULT_SPRING_STIFFNESS } from '../scene/joints.ts'
 import {
@@ -39,6 +42,7 @@ export function Inspector() {
       {!body && !fluid && (
         <div className="flex flex-col gap-3">
           <p className="text-muted">Selecciona un objeto o una región de fluido.</p>
+          <WindCard />
           {fluidOptions.length > 0 && (
             <Field label="Regiones de fluido">
               <select
@@ -282,6 +286,7 @@ export function Inspector() {
             />
             Bloquear rotación
           </label>
+          <ThrusterCard body={body} mass={live?.mass ?? 0} angle={live?.angle ?? body.angle} />
           {joints.length > 0 && (
             <div className="flex flex-col gap-2 border-t border-line pt-3">
               <div className="text-[11px] uppercase tracking-wide text-muted">Uniones</div>
@@ -309,6 +314,186 @@ export function Inspector() {
         </div>
       )}
     </aside>
+  )
+}
+
+const DEG = 180 / Math.PI
+
+/** Constant force on the body: magnitude, direction and point of application. */
+function ThrusterCard({ body, mass, angle }: { body: SceneBody; mass: number; angle: number }) {
+  const lab = useLab()
+  const t = body.thruster
+  const g = 9.81
+  if (!t) {
+    return (
+      <div className="flex flex-col gap-2 border-t border-line pt-3">
+        <div className="text-[11px] uppercase tracking-wide text-muted">Propulsor</div>
+        <button
+          type="button"
+          className="rounded-md border border-line px-2 py-1 text-xs hover:border-accent"
+          disabled={body.type !== 'dynamic'}
+          title={body.type !== 'dynamic' ? 'Solo cuerpos dinámicos' : undefined}
+          onClick={() =>
+            // 1,5·m·g hacia arriba del cuerpo: despega. También con la herramienta 🚀 (T).
+            lab.commitPatch(body.id, {
+              thruster: {
+                force: Number((1.5 * Math.max(mass, 0.01) * g).toFixed(1)),
+                angle: Math.PI / 2,
+                anchor: { x: 0, y: 0 },
+                followsBody: true,
+              },
+            })
+          }
+        >
+          🚀 Añadir propulsor
+        </button>
+      </div>
+    )
+  }
+  const patch = (p: Partial<NonNullable<SceneBody['thruster']>>) =>
+    lab.commitPatch(body.id, { thruster: { ...t, ...p } })
+  return (
+    <div className="flex flex-col gap-2 border-t border-line pt-3">
+      <div className="flex items-center justify-between">
+        <div className="text-[11px] uppercase tracking-wide text-muted">Propulsor</div>
+        <button
+          type="button"
+          className="rounded border border-danger/40 px-1.5 py-0.5 text-[10px] text-danger hover:bg-danger/10"
+          onClick={() => lab.commitPatch(body.id, { thruster: undefined })}
+        >
+          Quitar
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Num
+          label="Fuerza (N)"
+          value={t.force}
+          descriptor={PROPERTY_DESCRIPTORS.thrustForce}
+          onChange={(v) => patch({ force: v })}
+        />
+        <Num
+          label={t.followsBody ? 'Dirección (°, cuerpo)' : 'Dirección (°)'}
+          value={t.angle * DEG}
+          descriptor={PROPERTY_DESCRIPTORS.thrustAngleDeg}
+          onChange={(v) => patch({ angle: v / DEG })}
+        />
+        <Num
+          label="Punto x local (m)"
+          value={t.anchor.x}
+          descriptor={PROPERTY_DESCRIPTORS.anchorLocal}
+          onChange={(v) => patch({ anchor: { ...t.anchor, x: v } })}
+        />
+        <Num
+          label="Punto y local (m)"
+          value={t.anchor.y}
+          descriptor={PROPERTY_DESCRIPTORS.anchorLocal}
+          onChange={(v) => patch({ anchor: { ...t.anchor, y: v } })}
+        />
+      </div>
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={t.followsBody}
+          onChange={(e) =>
+            // Keep the current world direction when switching frames.
+            patch({
+              followsBody: e.target.checked,
+              angle: e.target.checked ? t.angle - angle : t.angle + angle,
+            })
+          }
+        />
+        Gira con el cuerpo (cohete)
+      </label>
+      {mass > 0 && (
+        <p className="text-[11px] text-muted">
+          a = F/m = {(t.force / mass).toFixed(2)} m/s² · F/(m·g) ={' '}
+          {(t.force / (mass * g)).toFixed(2)}
+        </p>
+      )}
+    </div>
+  )
+}
+
+const WIND_PRESETS: { label: string; speed: number }[] = [
+  { label: 'Calma', speed: 0 },
+  { label: 'Brisa', speed: 5 },
+  { label: 'Fuerte', speed: 15 },
+  { label: 'Huracán', speed: 40 },
+]
+
+/** World air: quadratic drag against the wind. Off = vacuum, as before. */
+function WindCard() {
+  const lab = useLab()
+  const wind = useLabStore((s) => s.wind)
+  const set = (p: Partial<SceneWind>) => wind && lab.setWind({ ...wind, ...p })
+  return (
+    <div className="flex flex-col gap-2 border-t border-line pt-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted">Aire y viento</div>
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={wind !== null}
+          onChange={(e) =>
+            lab.setWind(
+              e.target.checked
+                ? { speed: 10, direction: 0, airDensity: DEFAULT_AIR_DENSITY, gust: 0.3 }
+                : null,
+            )
+          }
+        />
+        Aire (sin marcar: vacío)
+      </label>
+      {wind && (
+        <>
+          <div className="flex gap-1">
+            {WIND_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                className={`flex-1 rounded border px-1 py-0.5 text-[10px] ${
+                  wind.speed === p.speed
+                    ? 'border-accent bg-accent/15 text-accent'
+                    : 'border-line hover:border-accent/50'
+                }`}
+                onClick={() => set({ speed: p.speed })}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Num
+              label="Viento (m/s)"
+              value={wind.speed}
+              descriptor={PROPERTY_DESCRIPTORS.windSpeed}
+              onChange={(v) => set({ speed: v })}
+            />
+            <Num
+              label="Hacia (°) · 0 = →"
+              value={wind.direction * DEG}
+              descriptor={PROPERTY_DESCRIPTORS.windAngleDeg}
+              onChange={(v) => set({ direction: v / DEG })}
+            />
+            <Num
+              label="Ráfagas (%)"
+              value={wind.gust * 100}
+              descriptor={PROPERTY_DESCRIPTORS.windGustPct}
+              onChange={(v) => set({ gust: v / 100 })}
+            />
+            <Num
+              label="ρ aire (kg/m³)"
+              value={wind.airDensity}
+              descriptor={PROPERTY_DESCRIPTORS.airDensity}
+              onChange={(v) => set({ airDensity: v })}
+            />
+          </div>
+          <p className="text-[11px] text-muted">
+            F = ½·ρ·C<sub>d</sub>·A·|u|·u, con u = viento − v del cuerpo. Con viento 0 queda el
+            rozamiento del aire (velocidad límite).
+          </p>
+        </>
+      )}
+    </div>
   )
 }
 

@@ -31,6 +31,13 @@ export const PROPERTY_DESCRIPTORS = {
   damping: { min: 0, max: 10_000, step: 0.5, label: 'Amortiguación' },
   restLength: { min: 0, max: 1000, step: 0.05, unit: 'm', label: 'Longitud' },
   restSurfaceY: { step: 0.01, unit: 'm', label: 'Superficie en reposo' },
+  thrustForce: { min: 0, max: 1_000_000, step: 10, unit: 'N', label: 'Fuerza' },
+  thrustAngleDeg: { step: 5, unit: '°', label: 'Dirección' },
+  anchorLocal: { min: -100, max: 100, step: 0.05, unit: 'm', label: 'Punto' },
+  windSpeed: { min: 0, max: 100, step: 1, unit: 'm/s', label: 'Viento' },
+  windAngleDeg: { step: 5, unit: '°', label: 'Dirección' },
+  windGustPct: { min: 0, max: 100, step: 5, unit: '%', label: 'Ráfagas' },
+  airDensity: { min: 0, max: 1000, step: 0.1, unit: 'kg/m³', label: 'Densidad del aire' },
 } as const satisfies Record<string, PropertyDescriptor>
 
 export function clampProperty(value: number, desc?: PropertyDescriptor): number {

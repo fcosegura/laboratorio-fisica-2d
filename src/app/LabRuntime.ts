@@ -29,6 +29,7 @@ import {
   type SceneDocument,
   type SceneFluidRegion,
   type SceneJoint,
+  type SceneWind,
   type VizLayers,
 } from '../scene/document.ts'
 import { bodyToDesc } from '../scene/builder.ts'
@@ -290,6 +291,14 @@ export class LabRuntime {
     this.pushUi()
   }
 
+  /** Air and wind (`null` = vacuum). Read by the engine every step; nothing to rebuild. */
+  setWind(wind: SceneWind | null): void {
+    const prev = this.engine.doc.world.wind ?? null
+    if (!wind && !prev) return
+    this.history.apply(new SetWorldCommand({ wind }, { wind: prev ? structuredClone(prev) : null }))
+    this.pushUi()
+  }
+
   /** Incremental: keeps simTime, graphs and the velocity of untouched bodies. */
   undo(): void {
     const prev = this.engine.doc
@@ -479,6 +488,7 @@ export class LabRuntime {
       particlesTruncated: this.engine.particles.truncatedSeeds,
       particleLimit: PBF_MAX_PARTICLES,
       gravityPreset: this.engine.doc.world.gravityPreset,
+      wind: this.engine.doc.world.wind ? structuredClone(this.engine.doc.world.wind) : null,
       timings: {
         physics: this.engine.timings.physics,
         fluids: this.engine.timings.fluids,

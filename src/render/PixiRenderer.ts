@@ -17,6 +17,7 @@ import { getFluid, getSolid } from '../materials/catalog.ts'
 import type { SceneBody, SceneDocument, VizLayers } from '../scene/document.ts'
 import { jointAnchorWorld } from '../scene/joints.ts'
 import type { AppliedForce, SimulationEngine } from '../sim/engine.ts'
+import { thrusterWorld, windAt } from '../sim/forces.ts'
 import type { InteractionState } from '../interaction/state.ts'
 import {
   moveVertex,
@@ -44,6 +45,19 @@ const GRAV = 0xe24b8d
 const CONTACT = 0xff6b6b
 const JOINT = 0xc4b5fd
 const COLLIDER = 0xffe14d
+const THRUST = 0xff8a3d
+const WIND = 0xcfe3ff
+/** Force-layer arrows: 1 N → 1 cm, capped so a heavy body's force stays on screen. */
+const FORCE_ARROW_MAX = 3
+/** Wind streaks: about one per cell of this side (m), coarsened when zoomed out. */
+const WIND_CELL = 2.5
+const WIND_MAX_STREAKS = 260
+
+/** Deterministic hash in [0, 1) for integer cell coordinates and a salt. */
+function hash01(i: number, j: number, salt: number): number {
+  const h = Math.sin(i * 127.1 + j * 311.7 + salt * 74.7) * 43758.5453
+  return h - Math.floor(h)
+}
 
 function gridStep(ppm: number): number {
   if (ppm > 40) return 1
@@ -184,6 +198,7 @@ export class PixiRenderer {
   app: Application | null = null
   world = new Container()
   grid = new Graphics()
+  air = new Graphics()
   fluids = new Graphics()
   bodiesLayer = new Container()
   overlay = new Graphics()
@@ -207,13 +222,14 @@ export class PixiRenderer {
     this.app = app
     this.world = new Container()
     this.grid = new Graphics()
+    this.air = new Graphics()
     this.fluids = new Graphics()
     this.bodiesLayer = new Container()
     this.overlay = new Graphics()
     this.labels = new Container()
     this.bodyGfx.clear()
 
-    this.world.addChild(this.grid, this.fluids, this.bodiesLayer, this.overlay)
+    this.world.addChild(this.grid, this.air, this.fluids, this.bodiesLayer, this.overlay)
     app.stage.addChild(this.world)
     app.stage.addChild(this.labels)
     this.resize(canvas.clientWidth, canvas.clientHeight)
@@ -261,6 +277,7 @@ export class PixiRenderer {
     this.world.pivot.set(cam.x, cam.y)
 
     this.drawGrid(cam)
+    this.drawWind(engine, cam)
     this.drawFluids(engine, selected)
     this.syncBodies(engine, selected)
     this.drawOverlay(engine, viz, interaction)
@@ -359,6 +376,47 @@ export class PixiRenderer {
           width: y === 0 ? 0.03 : 0.015,
           pixelLine: true,
         })
+    }
+  }
+
+  /**
+   * Wind streaks anchored to world cells: each one drifts one cell with the mean wind and
+   * fades in and out, so panning and zooming do not make them jump. Frozen while paused
+   * (driven by sim time); length follows the local gusty speed.
+   */
+  private drawWind(engine: SimulationEngine, cam: Camera): void {
+    const g = this.air
+    g.clear()
+    const wind = engine.doc.world.wind
+    if (!wind) return
+    const speed = wind.speed
+    if (speed < 0.05) return
+    const ux = Math.cos(wind.direction)
+    const uy = Math.sin(wind.direction)
+    const { width, height } = this.view
+    const spanX = width / cam.pixelsPerMeter
+    const spanY = height / cam.pixelsPerMeter
+    let cell = WIND_CELL
+    while ((spanX / cell + 2) * (spanY / cell + 2) > WIND_MAX_STREAKS) cell *= 2
+    const t = engine.clock.simTime
+    const life = cell / speed
+    const i0 = Math.floor((cam.x - spanX / 2) / cell) - 1
+    const i1 = Math.ceil((cam.x + spanX / 2) / cell)
+    const j0 = Math.floor((cam.y - spanY / 2) / cell) - 1
+    const j1 = Math.ceil((cam.y + spanY / 2) / cell)
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        const phase = (t / life + hash01(i, j, 3)) % 1
+        const d = phase * cell
+        const x = (i + hash01(i, j, 1)) * cell + ux * d - ux * cell * 0.5
+        const y = (j + hash01(i, j, 2)) * cell + uy * d - uy * cell * 0.5
+        const w = windAt(wind, t, x, y)
+        const len = Math.min(1.2, Math.max(0.15, Math.hypot(w.x, w.y) * 0.05))
+        const alpha = 0.32 * Math.sin(Math.PI * phase)
+        g.moveTo(x - ux * len, y - uy * len)
+          .lineTo(x, y)
+          .stroke({ color: WIND, width: 0.025, alpha, cap: 'round' })
+      }
     }
   }
 
@@ -529,15 +587,67 @@ export class PixiRenderer {
 
     if (viz.force) {
       for (const f of engine.appliedForces) {
-        this.arrow(g, f.x, f.y, f.fx * 0.01, f.fy * 0.01, FORCE)
+        this.cappedArrow(g, f.x, f.y, f.fx * 0.01, f.fy * 0.01, FORCE)
       }
       for (const f of engine.persistentForces) {
-        this.arrow(g, f.x, f.y, f.fx * 0.02, f.fy * 0.02, FORCE)
+        this.cappedArrow(g, f.x, f.y, f.fx * 0.02, f.fy * 0.02, FORCE)
       }
     }
 
+    this.drawThrusters(g, engine)
+
     this.drawJoints(g, engine)
     this.drawGhost(g, engine, interaction)
+  }
+
+  private cappedArrow(g: Graphics, x: number, y: number, dx: number, dy: number, color: number) {
+    const len = Math.hypot(dx, dy)
+    const k = len > FORCE_ARROW_MAX ? FORCE_ARROW_MAX / len : 1
+    this.arrow(g, x, y, dx * k, dy * k, color)
+  }
+
+  /**
+   * Nozzle at the anchor, arrow along the force (length grows with F / m·g, saturating) and,
+   * while playing, a flickering exhaust flame on the opposite side.
+   */
+  private drawThrusters(g: Graphics, engine: SimulationEngine): void {
+    const playing = engine.clock.playing
+    for (const body of engine.doc.bodies) {
+      const thruster = body.thruster
+      if (!thruster) continue
+      const pose = this.poseOf(engine, body.id)
+      if (!pose) continue
+      const f = thrusterWorld(thruster, pose)
+      const mag = Math.hypot(f.fx, f.fy)
+      const ux = mag > 0 ? f.fx / mag : Math.cos(thruster.angle)
+      const uy = mag > 0 ? f.fy / mag : Math.sin(thruster.angle)
+      const mass = engine.curr.find((b) => b.id === body.id)?.mass ?? 0
+      const ratio = mass > 0 ? mag / (mass * 9.81) : 1
+      const len = 0.3 + 1.1 * Math.tanh(ratio)
+      const active = playing && body.type === 'dynamic' && mag > 0
+      if (active) {
+        const flicker = 0.75 + 0.25 * Math.sin(engine.clock.simTime * 40 + f.x * 13)
+        const fl = len * 0.7 * flicker
+        const px = -uy * 0.09
+        const py = ux * 0.09
+        g.poly([f.x + px, f.y + py, f.x - ux * fl, f.y - uy * fl, f.x - px, f.y - py]).fill({
+          color: 0xffd166,
+          alpha: 0.85,
+        })
+        g.poly([
+          f.x + px * 0.5,
+          f.y + py * 0.5,
+          f.x - ux * fl * 0.55,
+          f.y - uy * fl * 0.55,
+          f.x - px * 0.5,
+          f.y - py * 0.5,
+        ]).fill({ color: 0xffffff, alpha: 0.8 })
+      }
+      this.arrow(g, f.x, f.y, ux * len, uy * len, THRUST, 0.05)
+      g.circle(f.x, f.y, 0.07)
+        .fill({ color: BG, alpha: 0.9 })
+        .stroke({ color: THRUST, width: 0.03 })
+    }
   }
 
   private poseOf(engine: SimulationEngine, id: string) {
@@ -656,6 +766,20 @@ export class PixiRenderer {
         0.06,
       )
     }
+    if (interaction.kind === 'placingThruster') {
+      const pose = this.poseOf(engine, interaction.bodyId)
+      const origin = pose ? forceAnchorWorld(interaction.local, pose) : interaction.current
+      this.arrow(
+        g,
+        origin.x,
+        origin.y,
+        interaction.current.x - origin.x,
+        interaction.current.y - origin.y,
+        THRUST,
+        0.06,
+      )
+      g.circle(origin.x, origin.y, 0.07).stroke({ color: THRUST, width: 0.03 })
+    }
     if (interaction.kind === 'measuring') {
       g.moveTo(interaction.start.x, interaction.start.y)
         .lineTo(interaction.current.x, interaction.current.y)
@@ -734,6 +858,13 @@ export class PixiRenderer {
           : mass * FORCE_ACCEL_PER_METER
       const unit = interaction.mode === 'impulse' ? 'N·s' : 'N'
       add(`${(mag * scale).toFixed(1)} ${unit}`, interaction.current, '#ffb020')
+    }
+    if (interaction.kind === 'placingThruster') {
+      const pose = this.poseOf(engine, interaction.bodyId)
+      const origin = pose ? forceAnchorWorld(interaction.local, pose) : interaction.current
+      const mag = Math.hypot(interaction.current.x - origin.x, interaction.current.y - origin.y)
+      const mass = engine.world?.getBody(interaction.bodyId)?.mass ?? 1
+      add(`🚀 ${(mag * mass * FORCE_ACCEL_PER_METER).toFixed(1)} N`, interaction.current, '#ff8a3d')
     }
     if (interaction.kind === 'measuring' || measureLabel) {
       const mid = {
