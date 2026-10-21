@@ -44,7 +44,7 @@ export const TOOL_META: {
   {
     id: 'fan',
     label: 'Ventilador',
-    hint: 'A · arrastra: dirección y alcance; bajo el agua hace olas',
+    hint: 'A · arrastra: dirección y alcance; empieza sobre un cuerpo para montarlo (hélice)',
     group: 'phys',
   },
   { id: 'measure', label: 'Medir', hint: 'M', group: 'phys' },

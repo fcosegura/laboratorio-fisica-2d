@@ -41,6 +41,8 @@ export type SceneBody = {
   color?: number
   /** Constant force applied every physics step while the body is dynamic. */
   thruster?: SceneThruster
+  /** Takes part in mutual gravity: attracts every other marked body and is attracted. */
+  attracts?: boolean
 }
 
 /** Propulsor: fuerza constante sobre un cuerpo, en su propio marco o en el del mundo. */
@@ -52,6 +54,10 @@ export type SceneThruster = {
   /** Application point in body-local coordinates (m). Off the COM it also gives torque. */
   anchor: Vec2
   followsBody: boolean
+  /** Sim time (s) at which it ignites. Absent = 0. */
+  start?: number
+  /** Burn time (s); absent or 0 = burns forever. */
+  duration?: number
 }
 
 /**
@@ -70,6 +76,12 @@ export type SceneWind = {
 }
 
 export const DEFAULT_AIR_DENSITY = 1.2
+
+/**
+ * Laboratory G (N·m²/kg²), ~1.5·10⁸ times the real 6.67·10⁻¹¹: at lab scale (metres,
+ * hundreds of kg) the real one would move nothing.
+ */
+export const DEFAULT_GRAVITY_G = 0.01
 
 /**
  * Ventilador: chorro rectangular de anchura `width` que sale de (x, y) hacia `angle` y llega a
@@ -91,6 +103,11 @@ export type SceneFan = {
   speed: number
   /** Pulse period, s: the speed goes 0 → speed → 0 each period. 0 = steady. */
   period: number
+  /**
+   * Mounted on this body (a propeller): x, y and angle are in its frame, the fan moves with
+   * it and the water it pushes pushes the body back. Absent = fixed in the world.
+   */
+  bodyId?: string
 }
 
 /** Analytic hydrostatic tank (Archimedes + drag). Flat free surface; does not spill. */
@@ -118,6 +135,7 @@ export type SceneFluidVolume = {
 export const JointKindUi = {
   fixed: 'fixed',
   revolute: 'revolute',
+  flex: 'flex',
   spring: 'spring',
   rope: 'rope',
 } as const
@@ -125,12 +143,34 @@ export type JointKindUi = (typeof JointKindUi)[keyof typeof JointKindUi]
 
 export type SceneJointKind = JointKindUi | 'distance'
 
-export const JOINT_KIND_META: { id: JointKindUi; label: string; hint: string; chip: string }[] = [
+/** What the joint tool makes: a joint kind, or a chain (links joined by hinges). */
+export type JointToolKind = JointKindUi | 'chain'
+
+export const JOINT_KIND_META: { id: JointToolKind; label: string; hint: string; chip: string }[] = [
   { id: 'fixed', label: 'Soldar', hint: 'Unión rígida', chip: 'So' },
   { id: 'revolute', label: 'Bisagra', hint: 'Pivote', chip: 'Bi' },
+  {
+    id: 'flex',
+    label: 'Flexible',
+    hint: 'Bisagra con muelle: se dobla y recupera su ángulo',
+    chip: 'Fl',
+  },
   { id: 'spring', label: 'Resorte', hint: 'Muelle', chip: 'Re' },
   { id: 'rope', label: 'Cuerda', hint: 'Distancia máxima', chip: 'Cu' },
+  {
+    id: 'chain',
+    label: 'Cadena',
+    hint: 'Eslabones articulados; suelta en vacío para dejar el extremo libre',
+    chip: 'Ca',
+  },
 ]
+
+/**
+ * Flexible joint fallback (N·m/rad, N·m·s/rad) for documents that omit them; the joint tool
+ * sizes them from the bodies instead (`flexParamsFor`).
+ */
+export const DEFAULT_FLEX_STIFFNESS = 2000
+export const DEFAULT_FLEX_DAMPING = 60
 
 export type SceneJoint = {
   id: string
@@ -175,6 +215,8 @@ export type SceneDocument = {
     gravityPreset: GravityPreset
     timeScale: number
     wind?: SceneWind
+    /** G of the mutual gravity between marked bodies (absent = DEFAULT_GRAVITY_G). */
+    gravityG?: number
   }
   bodies: SceneBody[]
   joints: SceneJoint[]

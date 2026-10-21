@@ -1,10 +1,60 @@
 import { PHYSICS_DT } from '../core/constants.ts'
+import { polygonArea } from '../core/math/polygon.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import type { BodySnapshot, PhysicsShape } from '../physics/ports.ts'
 import type { SceneFan, SceneThruster, SceneWind } from '../scene/document.ts'
 
 /** Drag coefficient for every shape (blunt 2D body, between a cylinder and a flat plate). */
 export const AIR_DRAG_COEFF = 1.2
+
+/** Plummer softening (m): keeps the pull finite when two bodies touch or overlap. */
+export const GRAVITY_SOFTENING = 0.25
+
+/** Area of a shape (m², 1 m thick); zero for lines. */
+export function shapeArea(shape: PhysicsShape): number {
+  switch (shape.kind) {
+    case 'circle':
+      return Math.PI * shape.radius * shape.radius
+    case 'box':
+      return 4 * shape.hx * shape.hy
+    case 'capsule':
+      return 4 * shape.radius * shape.halfHeight + Math.PI * shape.radius * shape.radius
+    case 'convex':
+      return Math.abs(polygonArea(shape.vertices))
+    case 'compound':
+      return shape.parts.reduce((a, p) => a + shapeArea(p), 0)
+    case 'polyline':
+    case 'segment':
+      return 0
+  }
+}
+
+/**
+ * Newtonian pull on `a` from `b`, softened: F = G·ma·mb·r / (r² + ε²)^{3/2} (Plummer), so
+ * it is exact far away and bounded at contact.
+ */
+export function gravityPull(
+  G: number,
+  ma: number,
+  ax: number,
+  ay: number,
+  mb: number,
+  bx: number,
+  by: number,
+): Vec2 {
+  const dx = bx - ax
+  const dy = by - ay
+  const d2 = dx * dx + dy * dy + GRAVITY_SOFTENING * GRAVITY_SOFTENING
+  const k = (G * ma * mb) / (d2 * Math.sqrt(d2))
+  return { x: k * dx, y: k * dy }
+}
+
+/** Burning at sim time t: after `start`, and for `duration` s when one is set. */
+export function thrusterActive(t: SceneThruster, time: number): boolean {
+  const start = t.start ?? 0
+  if (time < start) return false
+  return !t.duration || time < start + t.duration
+}
 
 /** Thruster force and application point in world space for a body at `pose`. */
 export function thrusterWorld(

@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 import {
+  DEFAULT_GRAVITY_G,
   DEFAULT_VIZ,
-  type JointKindUi,
+  type JointToolKind,
   type SceneBody,
   type SceneFan,
   type SceneFluidRegion,
@@ -52,10 +53,12 @@ export type Timings = {
 
 export type LabUiState = {
   tool: ToolId
-  jointKind: JointKindUi
+  jointKind: JointToolKind
   materialId: string
   /** Material de fluido al crear tanque (`fluid`) o derrame (`spill`). */
   fluidMaterialId: string
+  /** Separación de partículas al crear fluido libre (la fija el primer volumen). */
+  spillSpacing: number
   viz: VizLayers
   playing: boolean
   timeScale: number
@@ -65,6 +68,8 @@ export type LabUiState = {
   selectedFluidId: string | null
   selectedFluidRegion: SceneFluidRegion | null
   selectedFan: SceneFan | null
+  /** Nombre del cuerpo que lleva el ventilador seleccionado (hélice). */
+  fanHostName: string | null
   /** Aviso muted cuando hay regiones de fluido con AABB solapado. */
   fluidOverlapWarning: string | null
   /** Aviso breve de una acción rechazada (p. ej. tanque no convexo). */
@@ -87,6 +92,9 @@ export type LabUiState = {
   gravityPreset: GravityPreset
   /** Aire del mundo (null = vacío). */
   wind: SceneWind | null
+  /** G de la gravitación entre cuerpos y cuántos cuerpos la tienen activada. */
+  gravityG: number
+  attractorCount: number
   inspectorOpen: boolean
   graphsOpen: boolean
   debugHud: boolean
@@ -98,6 +106,7 @@ export const useLabStore = create<LabUiState>(() => ({
   jointKind: 'revolute',
   materialId: 'wood',
   fluidMaterialId: DEFAULT_FLUID,
+  spillSpacing: 0.1,
   viz: { ...DEFAULT_VIZ },
   playing: false,
   timeScale: 1,
@@ -107,6 +116,7 @@ export const useLabStore = create<LabUiState>(() => ({
   selectedFluidId: null,
   selectedFluidRegion: null,
   selectedFan: null,
+  fanHostName: null,
   fluidOverlapWarning: null,
   notice: null,
   fluidRegionOptions: [],
@@ -123,6 +133,8 @@ export const useLabStore = create<LabUiState>(() => ({
   spaceHeld: false,
   gravityPreset: 'earth',
   wind: null,
+  gravityG: DEFAULT_GRAVITY_G,
+  attractorCount: 0,
   inspectorOpen: true,
   graphsOpen: true,
   debugHud: true,

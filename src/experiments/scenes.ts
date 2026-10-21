@@ -735,6 +735,255 @@ export const EXPERIMENTS: { id: string; title: string; build: () => SceneDocumen
     },
   },
   {
+    id: 'burnout-rocket',
+    title: 'Cohete sin combustible',
+    build: () => {
+      const doc = base(
+        'Cohete sin combustible',
+        'Un propulsor de 2·m·g quema 1 s inclinado 30°: el cohete acelera en línea recta. Al ' +
+          'apagarse sigue un tiro parabólico. Mira el cambio de pendiente de vy en la gráfica.',
+      )
+      const tilt = -Math.PI / 6
+      const mass = 50
+      doc.bodies = [
+        box('body:ground', 'Suelo', 10, -0.25, 20, 0.25, 'stone', { type: 'fixed' }),
+        box('body:rocket', 'Cohete', 0, 0.55, 0.12, 0.45, 'metal', {
+          angle: tilt,
+          massMode: 'explicit',
+          mass,
+          linearDamping: 0,
+          angularDamping: 0,
+          lockRotation: true,
+          thruster: {
+            force: Number((2 * mass * 9.81).toFixed(1)),
+            angle: Math.PI / 2,
+            anchor: { x: 0, y: -0.45 },
+            followsBody: true,
+            start: 0,
+            duration: 1,
+          },
+        }),
+      ]
+      doc.camera = { x: 11, y: 4.5, pixelsPerMeter: 22 }
+      doc.visualization.trajectories = true
+      return doc
+    },
+  },
+  {
+    id: 'flex-chain',
+    title: 'Trampolín y cadena',
+    build: () => {
+      const doc = base(
+        'Trampolín y cadena',
+        'Izquierda: un trampolín de tres tablas con uniones flexibles (bisagras con muelle) se ' +
+          'dobla al caerle la bola y vuelve. Derecha: una cadena de eslabones articulados cae y ' +
+          'oscila con un peso en la punta.',
+      )
+      const free = { linearDamping: 0, angularDamping: 0 }
+      const plank = { hx: 0.5, hy: 0.05 }
+      const boardY = 2.3
+      const x0 = -2.7
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 7, 0.25, 'stone', { type: 'fixed' }),
+        box('body:wall', 'Muro', -3, 1.15, 0.3, 1.4, 'stone', { type: 'fixed' }),
+      ]
+      doc.joints = []
+      for (let k = 0; k < 3; k++) {
+        doc.bodies.push(
+          box(
+            `body:plank${k}`,
+            `Tabla ${k + 1}`,
+            x0 + plank.hx * (2 * k + 1),
+            boardY,
+            plank.hx,
+            plank.hy,
+            'cork',
+            free,
+          ),
+        )
+        doc.joints.push({
+          id: `joint:flex${k}`,
+          kind: 'flex',
+          bodyA: k === 0 ? 'body:wall' : `body:plank${k - 1}`,
+          bodyB: `body:plank${k}`,
+          anchorA: k === 0 ? { x: 0.3, y: boardY - 1.15 } : { x: plank.hx, y: 0 },
+          anchorB: { x: -plank.hx, y: 0 },
+          frameA: 0,
+          frameB: 0,
+          // Stiffer than the tool's two-body default: each joint carries the planks beyond it.
+          stiffness: 60000,
+          damping: 1000,
+        })
+      }
+      doc.bodies.push(ball('body:ball', 'Bola', -0.05, 4.2, 0.2, 'cork', free))
+
+      // Chain: hinged capsule links from a fixed hook, laid out horizontally, weight at the tip.
+      const hook = { x: 3.2, y: 4 }
+      const links = 10
+      const seg = 0.2
+      const r = 0.035
+      doc.bodies.push(
+        box('body:hook', 'Gancho', hook.x, hook.y, 0.1, 0.1, 'metal', { type: 'fixed' }),
+      )
+      for (let k = 0; k < links; k++) {
+        doc.bodies.push({
+          ...box(
+            `body:link${k}`,
+            `Eslabón ${k + 1}`,
+            hook.x + seg * (k + 0.5),
+            hook.y,
+            0,
+            0,
+            'wood',
+            free,
+          ),
+          angle: -Math.PI / 2,
+          shape: { kind: 'capsule', halfHeight: seg / 2 - r, radius: r },
+        })
+        doc.joints.push({
+          id: `joint:link${k}`,
+          kind: 'revolute',
+          bodyA: k === 0 ? 'body:hook' : `body:link${k - 1}`,
+          bodyB: `body:link${k}`,
+          anchorA: k === 0 ? { x: 0, y: 0 } : { x: 0, y: seg / 2 },
+          anchorB: { x: 0, y: -seg / 2 },
+        })
+      }
+      doc.bodies.push(
+        ball('body:weight', 'Peso', hook.x + seg * links + 0.15, hook.y, 0.15, 'wood', free),
+      )
+      doc.joints.push({
+        id: 'joint:weight',
+        kind: 'revolute',
+        bodyA: `body:link${links - 1}`,
+        bodyB: 'body:weight',
+        anchorA: { x: 0, y: seg / 2 },
+        anchorB: { x: -0.15, y: 0 },
+      })
+      doc.camera = { x: 0.5, y: 2.2, pixelsPerMeter: 60 }
+      // Velocity labels on every link would hide the chain.
+      doc.visualization.velocity = false
+      return doc
+    },
+  },
+  {
+    id: 'orbits',
+    title: 'Órbitas (gravitación)',
+    build: () => {
+      const doc = base(
+        'Órbitas',
+        'Sin gravedad global: el sol y los planetas se atraen con F = G·m₁·m₂/r². El planeta ' +
+          'interior va a la velocidad circular √(GM/r); el exterior, más lento, describe una elipse.',
+      )
+      doc.world.gravity = { ...GRAVITY_PRESETS.zero }
+      doc.world.gravityPreset = 'zero'
+      const G = 0.01
+      doc.world.gravityG = G
+      const M = 20000
+      const m = 10
+      const r1 = 5
+      const r2 = 9
+      const v1 = Math.sqrt((G * M) / r1)
+      const v2 = 0.92 * Math.sqrt((G * M) / r2)
+      const free = { linearDamping: 0, angularDamping: 0, gravityScale: 0, attracts: true }
+      doc.bodies = [
+        ball('body:sun', 'Sol', 0, 0, 0.6, 'metal', {
+          ...free,
+          massMode: 'explicit',
+          mass: M,
+          // Total momentum zero: the sun recoils a little against the planets.
+          vy: -(m * v1 - m * v2) / M,
+          color: 0xffc94d,
+        }),
+        ball('body:inner', 'Planeta interior', r1, 0, 0.18, 'rubber', {
+          ...free,
+          massMode: 'explicit',
+          mass: m,
+          vy: v1,
+          color: 0x7aa2ff,
+        }),
+        ball('body:outer', 'Planeta exterior', -r2, 0, 0.22, 'stone', {
+          ...free,
+          massMode: 'explicit',
+          mass: m,
+          vy: -v2,
+          color: 0xe2804b,
+        }),
+      ]
+      doc.camera = { x: 0, y: 0, pixelsPerMeter: 24 }
+      doc.visualization = { ...DEFAULT_VIZ, trajectories: true, contacts: false }
+      return doc
+    },
+  },
+  {
+    id: 'propeller-boat',
+    title: 'Barco de hélice',
+    build: () => {
+      const doc = base(
+        'Barco de hélice',
+        'La hélice va montada en el casco y empuja el agua hacia atrás: el agua empuja el barco ' +
+          'hacia delante (acción y reacción). Detrás queda la estela.',
+      )
+      doc.bodies = [
+        box('body:ground', 'Suelo', 0, -0.25, 7, 0.25, 'stone', { type: 'fixed' }),
+        box('body:left', 'Pared izq.', -6.1, 1, 0.1, 1, 'stone', { type: 'fixed' }),
+        box('body:right', 'Pared der.', 6.1, 1, 0.1, 1, 'stone', { type: 'fixed' }),
+        box('body:boat', 'Barco', -4, 1.05, 0.6, 0.15, 'wood', {
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
+        box('body:cabin', 'Cabina', -4.15, 1.4, 0.2, 0.2, 'wood', {
+          linearDamping: 0,
+          angularDamping: 0,
+        }),
+      ]
+      doc.joints = [
+        {
+          id: 'joint:cabin',
+          kind: 'fixed',
+          bodyA: 'body:boat',
+          bodyB: 'body:cabin',
+          anchorA: { x: -0.15, y: 0.15 },
+          anchorB: { x: 0, y: -0.2 },
+          frameA: 0,
+          frameB: 0,
+        },
+      ]
+      doc.fluidVolumes = [
+        {
+          id: 'fluid:lake',
+          name: 'Agua',
+          polygon: [
+            { x: -5.95, y: 0.02 },
+            { x: 5.95, y: 0.02 },
+            { x: 5.95, y: 1.0 },
+            { x: -5.95, y: 1.0 },
+          ],
+          materialId: 'water',
+          spacing: 0.1,
+        },
+      ]
+      doc.fans = [
+        {
+          id: 'fan:prop',
+          name: 'Hélice',
+          bodyId: 'body:boat',
+          x: -0.6,
+          y: -0.18,
+          angle: Math.PI,
+          width: 0.25,
+          range: 1.2,
+          speed: 2,
+          period: 0,
+        },
+      ]
+      doc.camera = { x: 0, y: 1.2, pixelsPerMeter: 55 }
+      doc.visualization.fluidParticles = true
+      doc.visualization.velocity = true
+      return doc
+    },
+  },
+  {
     id: 'fan-waves',
     title: 'Ventilador y oleaje',
     build: () => {

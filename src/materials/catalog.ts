@@ -24,6 +24,11 @@ export type FluidMaterial = {
   viscosity: number
   color: number
   opacity: number
+  /**
+   * Granular material (sand): Coulomb friction μ between grains, ≈ tan of the angle of
+   * repose. Particles only (an analytic tank is a liquid with a flat surface).
+   */
+  granular?: number
 }
 
 export const SOLID_MATERIALS: readonly SolidMaterial[] = [
@@ -98,6 +103,36 @@ export const SOLID_MATERIALS: readonly SolidMaterial[] = [
     angularDamping: 0.04,
     color: 0xe24b8d,
   },
+  {
+    id: 'foam',
+    name: 'Espuma',
+    density: 30,
+    friction: 0.6,
+    restitution: 0.2,
+    linearDamping: 0.1,
+    angularDamping: 0.1,
+    color: 0xf3efe0,
+  },
+  {
+    id: 'glass',
+    name: 'Vidrio',
+    density: 2500,
+    friction: 0.3,
+    restitution: 0.55,
+    linearDamping: 0.02,
+    angularDamping: 0.02,
+    color: 0x9fd8e6,
+  },
+  {
+    id: 'lead',
+    name: 'Plomo',
+    density: 11340,
+    friction: 0.5,
+    restitution: 0.05,
+    linearDamping: 0.02,
+    angularDamping: 0.02,
+    color: 0x5b6470,
+  },
 ]
 
 export const FLUID_MATERIALS: readonly FluidMaterial[] = [
@@ -125,7 +160,29 @@ export const FLUID_MATERIALS: readonly FluidMaterial[] = [
     color: 0xd97706,
     opacity: 0.7,
   },
+  {
+    id: 'mercury',
+    name: 'Mercurio',
+    density: 13534,
+    viscosity: 0.0015,
+    color: 0xb8c4cc,
+    opacity: 0.9,
+  },
+  {
+    id: 'sand',
+    name: 'Arena',
+    density: 1600,
+    viscosity: 0,
+    color: 0xd8b46a,
+    opacity: 1,
+    granular: 0.7,
+  },
 ]
+
+/** Materials an analytic tank can hold (liquids: granular ones need particles). */
+export const LIQUID_MATERIALS: readonly FluidMaterial[] = FLUID_MATERIALS.filter(
+  (m) => !m.granular,
+)
 
 export const DEFAULT_SOLID = 'wood'
 export const DEFAULT_FLUID = 'water'

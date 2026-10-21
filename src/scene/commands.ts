@@ -1,3 +1,4 @@
+import { DEFAULT_GRAVITY_G } from './document.ts'
 import type {
   GravityPreset,
   SceneBody,
@@ -47,6 +48,8 @@ export class RemoveBodyCommand implements Command {
   id: string
   stored: SceneBody | null = null
   storedJoints: SceneJoint[] = []
+  /** Fans mounted on the body go with it, back to their array index on undo. */
+  storedFans: { fan: SceneFan; index: number }[] = []
   index = -1
   constructor(id: string) {
     this.id = id
@@ -63,6 +66,10 @@ export class RemoveBodyCommand implements Command {
       const removed = new Set(this.storedJoints.map((j) => j.id))
       doc.joints = doc.joints.filter((j) => !removed.has(j.id))
     }
+    this.storedFans = (doc.fans ?? [])
+      .map((fan, index) => ({ fan: structuredClone(fan), index }))
+      .filter((f) => f.fan.bodyId === this.id)
+    if (this.storedFans.length) doc.fans = doc.fans!.filter((f) => f.bodyId !== this.id)
   }
   invert(doc: SceneDocument): void {
     if (this.stored) {
@@ -72,6 +79,11 @@ export class RemoveBodyCommand implements Command {
     }
     for (const joint of this.storedJoints) {
       if (!doc.joints.some((j) => j.id === joint.id)) doc.joints.push(structuredClone(joint))
+    }
+    const fans = this.storedFans.length ? (doc.fans ??= []) : []
+    for (const { fan, index } of this.storedFans) {
+      if (fans.some((f) => f.id === fan.id)) continue
+      fans.splice(Math.min(index, fans.length), 0, structuredClone(fan))
     }
   }
 }
@@ -365,6 +377,7 @@ export type WorldPatch = {
   timeScale?: number
   /** `null` removes the air (vacuum); `undefined` leaves it untouched. */
   wind?: SceneWind | null
+  gravityG?: number
 }
 
 export class SetWorldCommand implements Command {
@@ -381,6 +394,7 @@ export class SetWorldCommand implements Command {
         gravityPreset: doc.world.gravityPreset,
         timeScale: doc.world.timeScale,
         wind: doc.world.wind ? structuredClone(doc.world.wind) : null,
+        gravityG: doc.world.gravityG ?? DEFAULT_GRAVITY_G,
       }
     }
     this.write(doc, this.patch)
@@ -394,5 +408,6 @@ export class SetWorldCommand implements Command {
     if (patch.timeScale !== undefined) doc.world.timeScale = patch.timeScale
     if (patch.wind === null) delete doc.world.wind
     else if (patch.wind !== undefined) doc.world.wind = structuredClone(patch.wind)
+    if (patch.gravityG !== undefined) doc.world.gravityG = patch.gravityG
   }
 }

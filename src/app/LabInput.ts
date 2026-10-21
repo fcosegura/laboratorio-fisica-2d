@@ -21,12 +21,16 @@ import { Tool as ToolId } from '../interaction/tools.ts'
 import { applySolidPreset } from '../materials/applyPreset.ts'
 import { DEFAULT_FLUID, getFluid } from '../materials/catalog.ts'
 import { AddFluidCommand, AddFluidVolumeCommand, UpdateBodyCommand } from '../scene/commands.ts'
-import type { SceneBody, SceneJoint } from '../scene/document.ts'
-import { springParamsForMasses } from '../scene/joints.ts'
+import type { SceneBody, SceneFan, SceneJoint } from '../scene/document.ts'
+import { fanPatchToLocal } from '../scene/fans.ts'
+import { flexParamsFor, springParamsForMasses } from '../scene/joints.ts'
 import { pickFluidRegion } from '../scene/picking.ts'
 import type { LabRuntime } from './LabRuntime.ts'
 
 const MIN_FORCE_DRAG = 0.04
+/** Chain tool: link length (m) and the most links one chain gets. */
+const CHAIN_LINK = 0.2
+const CHAIN_MAX_LINKS = 40
 
 /**
  * Pointer, wheel and keyboard input for the lab canvas, and the creation gestures they
@@ -157,7 +161,7 @@ export class LabInput {
     const vertexIndex = region
       ? vertexAt(region.polygon, world, this.lab.camera.pixelsPerMeter)
       : -1
-    const fans = this.lab.engine.doc.fans ?? []
+    const fans = this.lab.fansInWorld()
     const fanHit =
       this.lab.tool() === 'select'
         ? fanAt(fans, world, this.lab.camera.pixelsPerMeter, this.lab.selectedFanId)
@@ -354,15 +358,20 @@ export class LabInput {
     }
     if (s.kind === 'editingFan') {
       this.lab.state = { kind: 'idle' }
-      const fan = this.lab.engine.doc.fans?.find((f) => f.id === s.fanId)
+      const fan = this.lab.fansInWorld().find((f) => f.id === s.fanId)
       if (!fan) return
       const patch = fanEditPatch(fan, s.grab, s.offset, world)
       // A plain click selects; it must not leave an empty Ctrl+Z entry.
       const changed = (Object.keys(patch) as (keyof typeof patch)[]).some(
         (k) => Math.abs((patch[k] as number) - (fan[k] as number)) > 1e-6,
       )
-      if (changed) this.lab.commitFanPatch(fan.id, patch)
-      else this.lab.pushUi()
+      if (!changed) {
+        this.lab.pushUi()
+        return
+      }
+      // A mounted fan stores body-local coordinates.
+      const pose = fan.bodyId ? this.lab.poseOf(fan.bodyId) : null
+      this.lab.commitFanPatch(fan.id, fanPatchToLocal(fan, patch, pose))
       return
     }
     if (s.kind === 'rotating') {
@@ -497,8 +506,9 @@ export class LabInput {
       const minY = Math.min(a.y, b.y)
       const maxY = Math.max(a.y, b.y)
       if (maxX - minX < 0.2 || maxY - minY < 0.2) return
-      const fluidMatId = this.lab.store?.getState().fluidMaterialId ?? DEFAULT_FLUID
-      const fluid = getFluid(fluidMatId)
+      const picked = getFluid(this.lab.store?.getState().fluidMaterialId ?? DEFAULT_FLUID)
+      // An analytic tank is a liquid: sand needs particles.
+      const fluid = picked.granular ? getFluid(DEFAULT_FLUID) : picked
       const regionId = this.lab.ids.next('fluid')
       this.lab.history.apply(
         new AddFluidCommand({
@@ -521,7 +531,7 @@ export class LabInput {
       // A click without a drag: default reach, blowing right.
       const aim =
         dist(a, b) < 0.15 ? { angle: 0, range: DEFAULT_FAN_RANGE } : aimFromDrag(a, b)
-      this.lab.addFan({
+      const fan: SceneFan = {
         id: this.lab.ids.next('fan'),
         name: 'Ventilador',
         x: a.x,
@@ -530,7 +540,19 @@ export class LabInput {
         width: DEFAULT_FAN_WIDTH,
         speed: DEFAULT_FAN_SPEED,
         period: 0,
-      })
+      }
+      // Started on a dynamic body: mount it there (a propeller, stored in the body frame).
+      const host = this.hitDynamic(a.x, a.y)
+      if (host) {
+        const pose = this.lab.poseOf(host)
+        Object.assign(fan, fanPatchToLocal({ ...fan, bodyId: host }, fan, pose), {
+          bodyId: host,
+          name: 'Hélice',
+          width: Math.min(DEFAULT_FAN_WIDTH, 0.4),
+          speed: 2,
+        })
+      }
+      this.lab.addFan(fan)
     } else if (tool === 'spill') {
       const minX = Math.min(a.x, b.x)
       const maxX = Math.max(a.x, b.x)
@@ -542,7 +564,7 @@ export class LabInput {
       this.lab.history.apply(
         new AddFluidVolumeCommand({
           id: this.lab.ids.next('fluid'),
-          name: `${fluid.name} libre`,
+          name: fluid.granular ? fluid.name : `${fluid.name} libre`,
           polygon: [
             { x: minX, y: minY },
             { x: maxX, y: minY },
@@ -550,7 +572,7 @@ export class LabInput {
             { x: minX, y: maxY },
           ],
           materialId: fluid.id,
-          spacing: 0.1,
+          spacing: this.lab.store?.getState().spillSpacing ?? 0.1,
         }),
       )
       const viz = this.lab.store?.getState().viz
@@ -598,12 +620,16 @@ export class LabInput {
 
   private commitJoin(s: Extract<InteractionState, { kind: 'joining' }>, world: Vec2): void {
     const hit = this.lab.engine.bodyAt(world.x, world.y)
+    const kind = this.lab.store?.getState().jointKind ?? 'revolute'
+    if (kind === 'chain') {
+      this.commitChain(s, world, hit && hit !== s.bodyA ? hit : null)
+      return
+    }
     if (!hit || hit === s.bodyA) return
     const poseA = this.lab.poseOf(s.bodyA)
     const poseB = this.lab.poseOf(hit)
     const worldA = transformPoint({ x: 0, y: 0 }, s.anchorA, poseA)
-    const kind = this.lab.store?.getState().jointKind ?? 'revolute'
-    const coincident = kind === 'fixed' || kind === 'revolute'
+    const coincident = kind === 'fixed' || kind === 'revolute' || kind === 'flex'
     const localB = inverseTransformPoint({ x: 0, y: 0 }, coincident ? worldA : world, poseB)
     const joint: SceneJoint = {
       id: this.lab.ids.next('joint'),
@@ -613,9 +639,18 @@ export class LabInput {
       anchorA: { x: s.anchorA.x, y: s.anchorA.y },
       anchorB: { x: localB.x, y: localB.y },
     }
-    if (kind === 'fixed') {
+    if (kind === 'fixed' || kind === 'flex') {
+      // Weld frames; for a flex joint they hold the rest angle its spring returns to.
       joint.frameA = 0
       joint.frameB = poseA.angle - poseB.angle
+    }
+    if (kind === 'flex') {
+      const part = (id: string) => {
+        const b = this.lab.engine.world?.getBody(id)
+        if (!b || b.type !== 'dynamic') return { mass: 0, inertia: 0, anchorDist: 0 }
+        return { mass: b.mass, inertia: b.inertia, anchorDist: dist(worldA, { x: b.comX, y: b.comY }) }
+      }
+      Object.assign(joint, flexParamsFor([part(s.bodyA), part(hit)]))
     }
     if (kind === 'spring' || kind === 'rope') joint.restLength = dist(worldA, world)
     if (kind === 'spring') {
@@ -624,6 +659,54 @@ export class LabInput {
       joint.damping = params.damping
     }
     this.lab.addJoint(joint)
+  }
+
+  /**
+   * Chain from body A's anchor to the release point: capsule links ~CHAIN_LINK long joined by
+   * hinges, the last one hinged to body B when released on one (else its end hangs free).
+   * Links use the selected material.
+   */
+  private commitChain(
+    s: Extract<InteractionState, { kind: 'joining' }>,
+    end: Vec2,
+    bodyB: string | null,
+  ): void {
+    const start = transformPoint({ x: 0, y: 0 }, s.anchorA, this.lab.poseOf(s.bodyA))
+    const len = dist(start, end)
+    if (len < CHAIN_LINK) return
+    const count = Math.min(CHAIN_MAX_LINKS, Math.max(2, Math.round(len / CHAIN_LINK)))
+    const seg = len / count
+    const half = seg / 2
+    const radius = Math.min(0.035, half * 0.4)
+    const dirX = (end.x - start.x) / len
+    const dirY = (end.y - start.y) / len
+    // Capsules lie along local y: this angle turns local +y towards the chain's end.
+    const angle = Math.atan2(dirY, dirX) - Math.PI / 2
+    const matId = this.lab.store?.getState().materialId ?? 'wood'
+    const links: SceneBody[] = []
+    const joints: SceneJoint[] = []
+    const hinge = (bodyA: string, anchorA: Vec2, bodyB: string, anchorB: Vec2) =>
+      joints.push({ id: this.lab.ids.next('joint'), kind: 'revolute', bodyA, bodyB, anchorA, anchorB })
+    for (let k = 0; k < count; k++) {
+      const c = seg * (k + 0.5)
+      const link = this.makeBody(
+        this.lab.ids.next('body'),
+        `Eslabón ${k + 1}`,
+        start.x + dirX * c,
+        start.y + dirY * c,
+        { kind: 'capsule', halfHeight: Math.max(0, half - radius), radius },
+        matId,
+        { angle, ccd: false },
+      )
+      links.push(link)
+      if (k === 0) hinge(s.bodyA, { ...s.anchorA }, link.id, { x: 0, y: -half })
+      else hinge(links[k - 1]!.id, { x: 0, y: half }, link.id, { x: 0, y: -half })
+    }
+    if (bodyB) {
+      const localB = inverseTransformPoint({ x: 0, y: 0 }, end, this.lab.poseOf(bodyB))
+      hinge(links[count - 1]!.id, { x: 0, y: half }, bodyB, { x: localB.x, y: localB.y })
+    }
+    this.lab.addChain(links, joints)
   }
 
   private onKeyDown(e: KeyboardEvent): void {

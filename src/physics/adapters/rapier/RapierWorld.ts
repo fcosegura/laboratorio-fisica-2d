@@ -457,7 +457,7 @@ export class RapierWorld implements PhysicsWorld {
     if (!a || !b) return
     const R = this.R
     const params =
-      desc.kind === 'revolute'
+      desc.kind === 'revolute' || desc.kind === 'flex'
         ? R.JointData.revolute(desc.anchorA, desc.anchorB)
         : desc.kind === 'fixed'
           ? R.JointData.fixed(desc.anchorA, desc.frameA ?? 0, desc.anchorB, desc.frameB ?? 0)
@@ -473,6 +473,20 @@ export class RapierWorld implements PhysicsWorld {
               ? R.JointData.prismatic(desc.anchorA, desc.anchorB, desc.axis ?? { x: 1, y: 0 })
               : R.JointData.rope(desc.restLength ?? 1, desc.anchorA, desc.anchorB)
     const joint = this.world.createImpulseJoint(params, a, b, true)
+    // Bodies held together (weld, hinge, flex) do not collide with each other, as in Box2D:
+    // overlapping links of a chain or a welded boat would otherwise fight their joint.
+    if (desc.kind === 'fixed' || desc.kind === 'revolute' || desc.kind === 'flex') {
+      joint.setContactsEnabled(false)
+    }
+    if (desc.motor && 'configureMotorPosition' in joint) {
+      const m = desc.motor
+      const revolute = joint as InstanceType<RapierModule['RevoluteImpulseJoint']>
+      // Force-based: stiffness in N·m/rad, so a beam carrying a load sags under it.
+      revolute.configureMotorModel(R.MotorModel.ForceBased)
+      if (m.mode === 'position') revolute.configureMotorPosition(m.target, m.stiffness, m.damping)
+      else revolute.configureMotorVelocity(m.target, m.damping)
+      if (m.maxImpulse !== undefined) revolute.setMotorMaxForce?.(m.maxImpulse)
+    }
     this.joints.set(desc.id, joint)
     this.jointEnds.set(desc.id, { a: desc.bodyA, b: desc.bodyB })
   }

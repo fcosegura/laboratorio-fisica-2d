@@ -15,9 +15,10 @@ import {
 } from '../interaction/force.ts'
 import { getFluid, getSolid } from '../materials/catalog.ts'
 import type { SceneBody, SceneDocument, SceneFan, VizLayers } from '../scene/document.ts'
+import { fanInWorld } from '../scene/fans.ts'
 import { jointAnchorWorld } from '../scene/joints.ts'
 import type { AppliedForce, SimulationEngine } from '../sim/engine.ts'
-import { fanProfile, fanPulse, thrusterWorld, windAt } from '../sim/forces.ts'
+import { fanProfile, fanPulse, thrusterActive, thrusterWorld, windAt } from '../sim/forces.ts'
 import {
   aimFromDrag,
   DEFAULT_FAN_RANGE,
@@ -51,6 +52,7 @@ const VEL = 0x7aa2ff
 const GRAV = 0xe24b8d
 const CONTACT = 0xff6b6b
 const JOINT = 0xc4b5fd
+const FLEX = 0x86efac
 const COLLIDER = 0xffe14d
 const THRUST = 0xff8a3d
 const WIND = 0xcfe3ff
@@ -84,6 +86,13 @@ function lightenColor(color: number, t: number): number {
   const lg = Math.round(g + (255 - g) * t)
   const lb = Math.round(b + (255 - b) * t)
   return (lr << 16) | (lg << 8) | lb
+}
+
+function darkenColor(color: number, t: number): number {
+  const r = Math.round(((color >> 16) & 255) * (1 - t))
+  const g = Math.round(((color >> 8) & 255) * (1 - t))
+  const b = Math.round((color & 255) * (1 - t))
+  return (r << 16) | (g << 8) | b
 }
 
 function drawShape(g: Graphics, body: SceneBody, color: number, alpha = 1): void {
@@ -263,7 +272,10 @@ export class PixiRenderer {
     }
     for (const f of doc.fluidRegions) includeAABB(box, aabbFromPoints(f.polygon))
     for (const v of doc.fluidVolumes) includeAABB(box, aabbFromPoints(v.polygon))
-    for (const f of doc.fans ?? []) includeAABB(box, aabbFromPoints([f, fanTip(f)]))
+    for (const fan of doc.fans ?? []) {
+      const f = fanInWorld(fan, doc.bodies.find((b) => b.id === fan.bodyId))
+      if (f) includeAABB(box, aabbFromPoints([f, fanTip(f)]))
+    }
     return box
   }
 
@@ -455,7 +467,17 @@ export class PixiRenderer {
     // PBF particles. Draw radius is larger than collision so discs overlap
     // into a puddle; concentric falloff avoids a gravel look.
     const drawR = engine.particles.particleDrawRadius
-    for (const p of engine.particles.particles) {
+    const grainR = engine.particles.particleSpacing * 0.58
+    const particles = engine.particles.particles
+    for (let k = 0; k < particles.length; k++) {
+      const p = particles[k]!
+      if (p.granular) {
+        // Grains: one opaque disc, shade jittered per grain (stable by index).
+        const shade = (hash01(k, 7, 5) - 0.5) * 0.3
+        const color = shade > 0 ? lightenColor(p.color, shade) : darkenColor(p.color, -shade)
+        g.circle(p.x, p.y, grainR).fill({ color, alpha: p.opacity })
+        continue
+      }
       const foam = p.density < 0.75 || Math.hypot(p.vx, p.vy) > 1.2
       const color = foam ? lightenColor(p.color, 0.4) : p.color
       const alpha = foam ? Math.min(0.5, p.opacity + 0.05) : Math.min(0.85, p.opacity + 0.2)
@@ -634,7 +656,8 @@ export class PixiRenderer {
       const mass = engine.curr.find((b) => b.id === body.id)?.mass ?? 0
       const ratio = mass > 0 ? mag / (mass * 9.81) : 1
       const len = 0.3 + 1.1 * Math.tanh(ratio)
-      const active = playing && body.type === 'dynamic' && mag > 0
+      const burning = thrusterActive(thruster, engine.clock.simTime)
+      const active = playing && burning && body.type === 'dynamic' && mag > 0
       if (active) {
         const flicker = 0.75 + 0.25 * Math.sin(engine.clock.simTime * 40 + f.x * 13)
         const fl = len * 0.7 * flicker
@@ -653,10 +676,12 @@ export class PixiRenderer {
           f.y - py * 0.5,
         ]).fill({ color: 0xffffff, alpha: 0.8 })
       }
-      this.arrow(g, f.x, f.y, ux * len, uy * len, THRUST, 0.05)
+      // Off (not yet lit or burnt out): a short, faint arrow.
+      if (burning) this.arrow(g, f.x, f.y, ux * len, uy * len, THRUST, 0.05)
+      else this.arrow(g, f.x, f.y, ux * 0.3, uy * 0.3, 0x6b7280, 0.03)
       g.circle(f.x, f.y, 0.07)
         .fill({ color: BG, alpha: 0.9 })
-        .stroke({ color: THRUST, width: 0.03 })
+        .stroke({ color: burning ? THRUST : 0x6b7280, width: 0.03 })
     }
   }
 
@@ -685,7 +710,9 @@ export class PixiRenderer {
     const fans = engine.doc.fans ?? []
     const t = engine.clock.simTime
     for (let i = 0; i < fans.length; i++) {
-      let fan = fans[i]!
+      const placed = fanInWorld(fans[i]!, fans[i]!.bodyId ? this.poseOf(engine, fans[i]!.bodyId!) : null)
+      if (!placed) continue
+      let fan = placed
       if (interaction.kind === 'editingFan' && interaction.fanId === fan.id) {
         fan = {
           ...fan,
@@ -773,6 +800,11 @@ export class PixiRenderer {
       if (kind === 'revolute') {
         g.circle(a.x, a.y, 0.07).stroke({ color: JOINT, width: 0.03 })
         g.circle(a.x, a.y, 0.03).fill({ color: JOINT, alpha: 0.9 })
+      } else if (kind === 'flex') {
+        // Torsion spring: a hinge with a second ring.
+        g.circle(a.x, a.y, 0.09).stroke({ color: FLEX, width: 0.025 })
+        g.circle(a.x, a.y, 0.055).stroke({ color: FLEX, width: 0.025 })
+        g.circle(a.x, a.y, 0.025).fill({ color: FLEX, alpha: 0.9 })
       } else {
         g.circle(a.x, a.y, 0.045).fill({ color: JOINT, alpha: 0.95 })
         g.circle(b.x, b.y, 0.045).fill({ color: JOINT, alpha: 0.95 })

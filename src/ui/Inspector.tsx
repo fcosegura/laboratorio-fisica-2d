@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { applySolidPreset } from '../materials/applyPreset.ts'
-import { FLUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
+import { LIQUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
 import {
   DEFAULT_AIR_DENSITY,
+  DEFAULT_FLEX_DAMPING,
+  DEFAULT_FLEX_STIFFNESS,
   JOINT_KIND_META,
   type BodyType,
   type MassMode,
@@ -46,6 +48,7 @@ export function Inspector() {
         <div className="flex flex-col gap-3">
           <p className="text-muted">Selecciona un objeto o una región de fluido.</p>
           <WindCard />
+          <GravityGCard />
           {fluidOptions.length > 0 && (
             <Field label="Regiones de fluido">
               <select
@@ -81,7 +84,7 @@ export function Inspector() {
               value={fluid.materialId}
               onChange={(e) => lab.commitFluidPatch(fluid.id, { materialId: e.target.value })}
             >
-              {FLUID_MATERIALS.map((m) => (
+              {LIQUID_MATERIALS.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
                 </option>
@@ -284,6 +287,16 @@ export function Inspector() {
           <label className="flex items-center gap-2 text-xs">
             <input
               type="checkbox"
+              checked={body.attracts ?? false}
+              onChange={(e) =>
+                lab.commitPatch(body.id, { attracts: e.target.checked ? true : undefined })
+              }
+            />
+            Gravitación mutua (atrae y es atraído)
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
               checked={body.lockRotation}
               onChange={(e) => lab.commitPatch(body.id, { lockRotation: e.target.checked })}
             />
@@ -393,6 +406,20 @@ function ThrusterCard({ body, mass, angle }: { body: SceneBody; mass: number; an
           onChange={(v) => patch({ anchor: { ...t.anchor, y: v } })}
         />
       </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Num
+          label="Encender en (s)"
+          value={t.start ?? 0}
+          descriptor={PROPERTY_DESCRIPTORS.thrustStart}
+          onChange={(v) => patch({ start: v })}
+        />
+        <Num
+          label="Duración (s) · 0 = siempre"
+          value={t.duration ?? 0}
+          descriptor={PROPERTY_DESCRIPTORS.thrustDuration}
+          onChange={(v) => patch({ duration: v })}
+        />
+      </div>
       <label className="flex items-center gap-2 text-xs">
         <input
           type="checkbox"
@@ -421,25 +448,35 @@ function ThrusterCard({ body, mass, angle }: { body: SceneBody; mass: number; an
 function FanCard({ fan }: { fan: SceneFan }) {
   const lab = useLab()
   const patch = (p: Partial<SceneFan>) => lab.commitFanPatch(fan.id, p)
+  const host = useLabStore((s) => s.fanHostName)
+  const local = fan.bodyId ? ' local' : ''
   return (
     <div className="flex flex-col gap-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted">Ventilador</div>
+      <div className="text-[11px] uppercase tracking-wide text-muted">
+        {fan.bodyId ? 'Hélice' : 'Ventilador'}
+      </div>
+      {fan.bodyId && (
+        <p className="text-[11px] text-muted">
+          Montada en «{host ?? fan.bodyId}»: se mueve con el cuerpo y el agua que empuja lo
+          empuja a él (acción y reacción). Posición y dirección en el marco del cuerpo.
+        </p>
+      )}
       <TextField label="Nombre" value={fan.name} onChange={(name) => patch({ name })} />
       <div className="grid grid-cols-2 gap-2">
         <Num
-          label="x (m)"
+          label={`x${local} (m)`}
           value={fan.x}
           descriptor={PROPERTY_DESCRIPTORS.x}
           onChange={(v) => patch({ x: v })}
         />
         <Num
-          label="y (m)"
+          label={`y${local} (m)`}
           value={fan.y}
           descriptor={PROPERTY_DESCRIPTORS.y}
           onChange={(v) => patch({ y: v })}
         />
         <Num
-          label="Hacia (°) · 0 = →"
+          label={fan.bodyId ? 'Hacia (°, cuerpo)' : 'Hacia (°) · 0 = →'}
           value={fan.angle * DEG}
           descriptor={PROPERTY_DESCRIPTORS.windAngleDeg}
           onChange={(v) => patch({ angle: v / DEG })}
@@ -473,7 +510,7 @@ function FanCard({ fan }: { fan: SceneFan }) {
         Sopla aire sobre los cuerpos del chorro. Dentro del agua de partículas empuja el agua
         como una hélice; con pulso (≈ 1–2 s) genera olas. Los tanques analíticos tienen
         superficie plana y no hacen olas. Arrastra el ventilador para moverlo y el punto del
-        extremo para orientarlo.
+        extremo para orientarlo. Créalo empezando el arrastre sobre un cuerpo para montarlo.
       </p>
       <button
         type="button"
@@ -482,6 +519,28 @@ function FanCard({ fan }: { fan: SceneFan }) {
       >
         Eliminar ventilador
       </button>
+    </div>
+  )
+}
+
+/** G of the mutual gravity (bodies opt in from their own inspector). */
+function GravityGCard() {
+  const lab = useLab()
+  const G = useLabStore((s) => s.gravityG)
+  const count = useLabStore((s) => s.attractorCount)
+  return (
+    <div className="flex flex-col gap-2 border-t border-line pt-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted">Gravitación entre cuerpos</div>
+      <Num
+        label="G (N·m²/kg²)"
+        value={G}
+        descriptor={PROPERTY_DESCRIPTORS.gravityG}
+        onChange={(v) => lab.setGravityG(v)}
+      />
+      <p className="text-[11px] text-muted">
+        F = G·m₁·m₂/r² entre los cuerpos con «Gravitación mutua» ({count} ahora). G de
+        laboratorio: la real (6,67·10⁻¹¹) no movería nada a esta escala.
+      </p>
     </div>
   )
 }
@@ -607,6 +666,22 @@ function JointCard({
           descriptor={PROPERTY_DESCRIPTORS.restLength}
           onChange={(v) => lab.commitJointPatch(joint.id, { restLength: v })}
         />
+      )}
+      {joint.kind === 'flex' && (
+        <div className="mt-1 grid grid-cols-2 gap-2">
+          <Num
+            label="Rigidez (N·m/rad)"
+            value={joint.stiffness ?? DEFAULT_FLEX_STIFFNESS}
+            descriptor={PROPERTY_DESCRIPTORS.stiffness}
+            onChange={(v) => lab.commitJointPatch(joint.id, { stiffness: v })}
+          />
+          <Num
+            label="Amortiguación (N·m·s/rad)"
+            value={joint.damping ?? DEFAULT_FLEX_DAMPING}
+            descriptor={PROPERTY_DESCRIPTORS.damping}
+            onChange={(v) => lab.commitJointPatch(joint.id, { damping: v })}
+          />
+        </div>
       )}
       {joint.kind === 'spring' && (
         <div className="mt-1 grid grid-cols-2 gap-2">

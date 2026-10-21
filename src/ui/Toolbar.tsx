@@ -1,4 +1,4 @@
-import { FLUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
+import { FLUID_MATERIALS, LIQUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
 import { useLab } from '../app/lab-context.ts'
 import { useLabStore } from '../app/store.ts'
 import { TOOL_META, type Tool } from '../interaction/tools.ts'
@@ -12,6 +12,8 @@ export function Toolbar() {
   const jointKind = useLabStore((s) => s.jointKind)
   const materialId = useLabStore((s) => s.materialId)
   const fluidMaterialId = useLabStore((s) => s.fluidMaterialId)
+  const spillSpacing = useLabStore((s) => s.spillSpacing)
+  const particleCount = useLabStore((s) => s.particleCount)
   const viz = useLabStore((s) => s.viz)
   const canUndo = useLabStore((s) => s.canUndo)
   const canRedo = useLabStore((s) => s.canRedo)
@@ -79,7 +81,7 @@ export function Toolbar() {
       )}
       <div className="my-1 h-px w-8 bg-line" />
       {fluidTool
-        ? FLUID_MATERIALS.map((m) => (
+        ? (tool === 'fluid' ? LIQUID_MATERIALS : FLUID_MATERIALS).map((m) => (
             <button
               key={m.id}
               type="button"
@@ -103,6 +105,30 @@ export function Toolbar() {
               style={{ background: `#${m.color.toString(16).padStart(6, '0')}` }}
             />
           ))}
+      {tool === 'spill' && (
+        <>
+          <div className="my-1 h-px w-8 bg-line" />
+          {SPILL_RESOLUTIONS.map((r) => (
+            <button
+              key={r.spacing}
+              type="button"
+              title={
+                particleCount > 0
+                  ? `${r.title}. Ya hay partículas: el nuevo volumen usa su resolución`
+                  : r.title
+              }
+              onClick={() => useLabStore.setState({ spillSpacing: r.spacing })}
+              className={`h-6 w-10 rounded text-[9px] ${
+                spillSpacing === r.spacing
+                  ? 'bg-accent/20 text-accent'
+                  : 'text-muted hover:bg-panel-2 hover:text-ink'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </>
+      )}
       <div className="my-1 h-px w-8 bg-line" />
       {(
         [
@@ -130,6 +156,13 @@ export function Toolbar() {
     </aside>
   )
 }
+
+/** Particle spacing of a new spill: coarser fits more water in the same particle budget. */
+const SPILL_RESOLUTIONS = [
+  { spacing: 0.07, label: 'fina', title: 'Resolución fina (0,07 m): detalle, poca agua' },
+  { spacing: 0.1, label: 'media', title: 'Resolución media (0,1 m)' },
+  { spacing: 0.15, label: 'gruesa', title: 'Resolución gruesa (0,15 m): ≈ 2× más agua' },
+]
 
 function ToolIcon({ id }: { id: Tool }) {
   const map: Record<Tool, string> = {

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { SCHEMA_VERSION, type SceneDocument } from './document.ts'
 import { PROPERTY_DESCRIPTORS } from './properties.ts'
-import { FLUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
+import { FLUID_MATERIALS, LIQUID_MATERIALS, SOLID_MATERIALS } from '../materials/catalog.ts'
 import { isConvex } from '../core/math/polygon.ts'
 
 const num = z.number().finite()
@@ -47,6 +47,7 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
           gust: num.min(0).max(PROPERTY_DESCRIPTORS.windGustPct.max / 100),
         })
         .optional(),
+      gravityG: num.min(0).max(PROPERTY_DESCRIPTORS.gravityG.max).optional(),
     }),
     bodies: z.array(
       z.object({
@@ -81,14 +82,17 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
             angle: num,
             anchor: vec2,
             followsBody: z.boolean(),
+            start: num.min(0).max(PROPERTY_DESCRIPTORS.thrustStart.max).optional(),
+            duration: num.min(0).max(PROPERTY_DESCRIPTORS.thrustDuration.max).optional(),
           })
           .optional(),
+        attracts: z.boolean().optional(),
       }),
     ),
     joints: z.array(
       z.object({
         id: z.string(),
-        kind: z.enum(['revolute', 'distance', 'spring', 'fixed', 'rope']),
+        kind: z.enum(['revolute', 'flex', 'distance', 'spring', 'fixed', 'rope']),
         bodyA: z.string(),
         bodyB: z.string(),
         anchorA: vec2,
@@ -132,6 +136,7 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
           period: num
             .min(PROPERTY_DESCRIPTORS.fanPeriod.min)
             .max(PROPERTY_DESCRIPTORS.fanPeriod.max),
+          bodyId: z.string().optional(),
         }),
       )
       .optional(),
@@ -255,6 +260,12 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
           message: `Material de fluido desconocido '${f.materialId}' en región '${f.name}'`,
           path: ['fluidRegions', i, 'materialId'],
         })
+      } else if (!LIQUID_MATERIALS.some((m) => m.id === f.materialId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `El tanque '${f.name}' debe ser un líquido ('${f.materialId}' es granular: usa fluido libre)`,
+          path: ['fluidRegions', i, 'materialId'],
+        })
       }
     }
 
@@ -269,6 +280,14 @@ export const sceneDocumentSchema: z.ZodType<SceneDocument> = z
         })
       }
       fanIds.add(id)
+      const bodyId = doc.fans![i]!.bodyId
+      if (bodyId !== undefined && !bodyIds.has(bodyId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `El ventilador '${id}' está montado en un cuerpo inexistente: '${bodyId}'`,
+          path: ['fans', i, 'bodyId'],
+        })
+      }
     }
 
     for (let i = 0; i < doc.fluidVolumes.length; i++) {

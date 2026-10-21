@@ -62,7 +62,14 @@ export type BodyDesc = {
   userData?: unknown
 }
 
-export type JointKind = 'fixed' | 'revolute' | 'prismatic' | 'distance' | 'spring' | 'rope'
+export type JointKind =
+  | 'fixed'
+  | 'revolute'
+  | 'flex'
+  | 'prismatic'
+  | 'distance'
+  | 'spring'
+  | 'rope'
 
 export type JointDesc = {
   id: JointId

@@ -3,7 +3,12 @@ import { transformPoint } from '../core/math/transform.ts'
 import type { Vec2 } from '../core/math/vec2.ts'
 import type { JointDesc } from '../physics/ports.ts'
 import type { PhysicsWorld } from '../physics/ports.ts'
-import type { SceneDocument, SceneJoint } from './document.ts'
+import {
+  DEFAULT_FLEX_DAMPING,
+  DEFAULT_FLEX_STIFFNESS,
+  type SceneDocument,
+  type SceneJoint,
+} from './document.ts'
 
 /** ω² for mass-scaled springs (period ≈ 2π/√400 ≈ 0.31 s). Also the Rapier/inspector fallback. */
 export const DEFAULT_SPRING_STIFFNESS = 400
@@ -30,7 +35,45 @@ export function springParamsForMasses(massA: number, massB: number): { stiffness
   return { stiffness, damping }
 }
 
+/** Flexible joint natural frequency (rad/s) and damping ratio (under-damped: it wobbles). */
+const FLEX_OMEGA = 30
+const FLEX_ZETA = 0.3
+
+/**
+ * Torsion spring for a flexible joint: k = ω²·ΣI, I about the anchor (I_com + m·d²) of each
+ * movable body. Sized on the two bodies only; a long beam carrying a load sags more, and
+ * the stiffness is editable.
+ */
+export function flexParamsFor(
+  bodies: readonly { mass: number; inertia: number; anchorDist: number }[],
+): { stiffness: number; damping: number } {
+  let I = 0
+  for (const b of bodies) {
+    if (b.mass > 0 && Number.isFinite(b.mass)) I += b.inertia + b.mass * b.anchorDist ** 2
+  }
+  if (!(I > 0)) return { stiffness: DEFAULT_FLEX_STIFFNESS, damping: DEFAULT_FLEX_DAMPING }
+  const stiffness = FLEX_OMEGA * FLEX_OMEGA * I
+  return { stiffness, damping: 2 * FLEX_ZETA * Math.sqrt(stiffness * I) }
+}
+
 export function jointToDesc(joint: SceneJoint): JointDesc {
+  if (joint.kind === 'flex') {
+    // Rest angle = relative angle at creation, stored like a weld's frames.
+    return {
+      id: joint.id,
+      kind: 'flex',
+      bodyA: joint.bodyA,
+      bodyB: joint.bodyB,
+      anchorA: joint.anchorA,
+      anchorB: joint.anchorB,
+      motor: {
+        mode: 'position',
+        target: (joint.frameA ?? 0) - (joint.frameB ?? 0),
+        stiffness: joint.stiffness ?? DEFAULT_FLEX_STIFFNESS,
+        damping: joint.damping ?? DEFAULT_FLEX_DAMPING,
+      },
+    }
+  }
   return {
     id: joint.id,
     kind: joint.kind === 'distance' ? 'rope' : joint.kind,

@@ -25,6 +25,7 @@ import {
 import { History } from '../scene/history.ts'
 import {
   cloneDocument,
+  DEFAULT_GRAVITY_G,
   emptyScene,
   GRAVITY_PRESETS,
   type GravityPreset,
@@ -37,6 +38,7 @@ import {
   type VizLayers,
 } from '../scene/document.ts'
 import { bodyToDesc } from '../scene/builder.ts'
+import { fanInWorld } from '../scene/fans.ts'
 import { jointToDesc } from '../scene/joints.ts'
 import { fluidOverlapWarning } from '../scene/fluidOverlap.ts'
 import { parseDocument, serializeDocument } from '../scene/schema.ts'
@@ -254,6 +256,16 @@ export class LabRuntime {
     this.pushUi()
   }
 
+  /** Fans in world space at the live pose (a mounted fan follows its body). */
+  fansInWorld(): SceneFan[] {
+    const out: SceneFan[] = []
+    for (const fan of this.engine.doc.fans ?? []) {
+      const placed = fanInWorld(fan, fan.bodyId ? this.poseOf(fan.bodyId) : null)
+      if (placed) out.push(placed)
+    }
+    return out
+  }
+
   /** Fans are read from the document every step: nothing to push into the live world. */
   commitFanPatch(id: string, patch: Partial<SceneFan>): void {
     this.history.apply(new UpdateFanCommand(id, patch))
@@ -325,6 +337,13 @@ export class LabRuntime {
     const prev = this.engine.doc.world.wind ?? null
     if (!wind && !prev) return
     this.history.apply(new SetWorldCommand({ wind }, { wind: prev ? structuredClone(prev) : null }))
+    this.pushUi()
+  }
+
+  setGravityG(G: number): void {
+    const prev = this.engine.doc.world.gravityG ?? DEFAULT_GRAVITY_G
+    if (G === prev) return
+    this.history.apply(new SetWorldCommand({ gravityG: G }, { gravityG: prev }))
     this.pushUi()
   }
 
@@ -420,6 +439,25 @@ export class LabRuntime {
     this.pushUi()
   }
 
+  /** Chain links and the hinges between them: one transaction, one Ctrl+Z. */
+  addChain(links: SceneBody[], joints: SceneJoint[]): void {
+    this.history.begin()
+    for (const body of links) {
+      this.history.apply(new AddBodyCommand(body))
+      this.engine.world?.addBody(bodyToDesc(body))
+    }
+    for (const joint of joints) {
+      this.history.apply(new AddJointCommand(joint))
+      this.engine.world?.addJoint(jointToDesc(joint))
+    }
+    this.history.commit()
+    this.selected = []
+    this.selectedFluidId = null
+    this.selectedFanId = null
+    this.engine.syncBodies()
+    this.pushUi()
+  }
+
   removeJoint(id: string): void {
     this.history.apply(new RemoveJointCommand(id))
     this.engine.world?.removeJoint(id)
@@ -506,6 +544,9 @@ export class LabRuntime {
       selectedFluidId: selectedFluid?.id ?? null,
       selectedFluidRegion: selectedFluid ? structuredClone(selectedFluid) : null,
       selectedFan: selectedFan ? structuredClone(selectedFan) : null,
+      fanHostName: selectedFan?.bodyId
+        ? (this.engine.doc.bodies.find((b) => b.id === selectedFan.bodyId)?.name ?? null)
+        : null,
       fluidRegionOptions: this.engine.doc.fluidRegions.map((r) => ({ id: r.id, name: r.name })),
       fluidOverlapWarning: fluidOverlapWarning(this.engine.doc.fluidRegions),
       selectedJoints,
@@ -527,6 +568,8 @@ export class LabRuntime {
       particleLimit: PBF_MAX_PARTICLES,
       gravityPreset: this.engine.doc.world.gravityPreset,
       wind: this.engine.doc.world.wind ? structuredClone(this.engine.doc.world.wind) : null,
+      gravityG: this.engine.doc.world.gravityG ?? DEFAULT_GRAVITY_G,
+      attractorCount: this.engine.doc.bodies.filter((b) => b.attracts).length,
       timings: {
         physics: this.engine.timings.physics,
         fluids: this.engine.timings.fluids,

@@ -46,6 +46,8 @@ export type FluidParticle = {
   opacity: number
   /** SPH density ρ_i / ρ0 (1 ≈ rest). */
   density: number
+  /** Granular material (sand): drawn as grains, no foam. */
+  granular: boolean
 }
 
 export const PBF_DEFAULT_SPACING = 0.1
@@ -53,7 +55,7 @@ export const PBF_DEFAULT_SPACING = 0.1
  * Particle budget. ~3 µs/particle/step in the browser (pair-list solver): 3000 leaves room
  * for drawing inside a 60 Hz frame.
  */
-export const PBF_MAX_PARTICLES = 3000
+export const PBF_MAX_PARTICLES = 4000
 
 const SPH_SUBSTEPS = 2
 /** Jacobi iterations of the density constraint per substep. */
@@ -100,6 +102,30 @@ const COLUMN_HALF_WIDTH = 1
 const COLUMN_GAP = 2.5
 /** Boundary sampling step, in spacings. */
 const SAMPLE_SPACING = 0.5
+/**
+ * Sand piles by sleeping grains. PBF pressure is isotropic, so even with grain friction a
+ * pile melts flat (its interior rearranges by normal motions the friction cannot stop). A
+ * slow, supported grain therefore falls asleep: it stops moving and becomes a fixed support
+ * for the others, which slide over it with Coulomb friction and stop where the slope lets
+ * them. It wakes when a touching grain hits it fast, a solid pushes it, or it loses its
+ * support. Grains slower than GRAIN_REST (m/s) stop.
+ */
+const GRAIN_REST = 0.01
+/** Substeps (0.1 s) a supported grain must stay under GRAIN_REST before it falls asleep. */
+const GRAIN_SLEEP = 12
+/** A touching grain faster than this (m/s) wakes a sleeping one (impacts, avalanches). */
+const GRAIN_WAKE = 0.5
+
+/** Grains closer than this (in spacings) touch: their velocities set a grain's slip. */
+const GRAIN_TOUCH = 1.25
+
+/**
+ * Sand holds bodies up by contact (bearing capacity), not by Archimedes: its particles
+ * report this many times the bulk density to the buoyancy model, so a body rests near the
+ * top instead of sinking like in quicksand (wood ≈ 6 % in, steel ≈ 60 %).
+ */
+const GRANULAR_BEARING = 8
+
 /** Steps (0.5 s) a float keeps the Archimedes model after losing water on one flank. */
 const FLOAT_HOLD_STEPS = 30
 /** Faces whose outward normal has an up component above this take only their own column. */
@@ -113,6 +139,8 @@ type Seed = {
   opacity: number
   density: number
   viscosity: number
+  /** Coulomb friction between grains (0 = liquid). */
+  friction: number
 }
 
 /**
@@ -141,6 +169,10 @@ export class PbfFluidSolver {
   private opacity: number[] = []
   private density: Float64Array = new Float64Array(0)
   private viscosity: Float64Array = new Float64Array(0)
+  /** Grain friction μ per particle (0 = liquid). */
+  private friction: Float64Array = new Float64Array(0)
+  /** Grains: consecutive slow, supported substeps; ≥ GRAIN_SLEEP = asleep. */
+  private still: Float64Array = new Float64Array(0)
   private rho: Float64Array = new Float64Array(0)
   private lambda: Float64Array = new Float64Array(0)
   private sphDensity: Float64Array = new Float64Array(0)
@@ -162,6 +194,10 @@ export class PbfFluidSolver {
   private pairW: Float64Array = new Float64Array(0)
   private pairGx: Float64Array = new Float64Array(0)
   private pairGy: Float64Array = new Float64Array(0)
+  /** Granular pairs: normal correction summed over the iterations, and the contact normal. */
+  private pairDn: Float64Array = new Float64Array(0)
+  private pairNx: Float64Array = new Float64Array(0)
+  private pairNy: Float64Array = new Float64Array(0)
   private xsphEps: Float64Array = new Float64Array(0)
   /** Collision radius of a particle. */
   get particleRadius(): number {
@@ -247,6 +283,8 @@ export class PbfFluidSolver {
       this.opacity[i] = s.opacity
       this.density[i] = s.density
       this.viscosity[i] = s.viscosity
+      this.friction[i] = s.friction
+      this.still[i] = 0
       this.sphDensity[i] = 1
       this.n++
     }
@@ -269,6 +307,8 @@ export class PbfFluidSolver {
         this.opacity[w] = this.opacity[i]!
         this.density[w] = this.density[i]!
         this.viscosity[w] = this.viscosity[i]!
+        this.friction[w] = this.friction[i]!
+        this.still[w] = this.still[i]!
         this.sphDensity[w] = this.sphDensity[i]!
       }
       w++
@@ -280,17 +320,25 @@ export class PbfFluidSolver {
   /**
    * External velocity field (fans): `push` writes a velocity change for a particle at (x, y)
    * moving at (vx, vy) and returns true to apply it. Call before `step`; the incompressible
-   * solve then turns the push into a current and surface waves.
+   * solve then turns the push into a current and surface waves. Returns the momentum given
+   * to the fluid (kg·m/s per metre of thickness): a propeller takes it back as thrust.
    */
   applyVelocityChange(
     push: (x: number, y: number, vx: number, vy: number, out: Vec2) => boolean,
-  ): void {
+  ): Vec2 {
     const out = { x: 0, y: 0 }
+    const area = this.spacing * this.spacing * 0.8660254037844386
+    let mx = 0
+    let my = 0
     for (let i = 0; i < this.n; i++) {
       if (!push(this.x[i]!, this.y[i]!, this.vx[i]!, this.vy[i]!, out)) continue
       this.vx[i]! += out.x
       this.vy[i]! += out.y
+      const m = area * this.density[i]!
+      mx += m * out.x
+      my += m * out.y
     }
+    return { x: mx, y: my }
   }
 
   step(world: PhysicsWorld, dt: number, bodies: readonly SceneBody[] = []): void {
@@ -345,6 +393,11 @@ export class PbfFluidSolver {
     const py = this.py
     const rho = this.rho
     const lam = this.lambda
+    const fr = this.friction
+    const still = this.still
+    const asleep = (i: number) => still[i]! >= GRAIN_SLEEP
+    let granular = false
+    for (let i = 0; i < n && !granular; i++) granular = fr[i]! > 0
 
     const collideAll = () => {
       for (let i = 0; i < n; i++) {
@@ -362,6 +415,13 @@ export class PbfFluidSolver {
       contact.hit.fill(0)
 
       for (let i = 0; i < n; i++) {
+        if (granular && asleep(i)) {
+          this.vx[i] = 0
+          this.vy[i] = 0
+          px[i] = this.x[i]!
+          py[i] = this.y[i]!
+          continue
+        }
         this.vx[i]! += g.x * dtSub
         this.vy[i]! += g.y * dtSub
         px[i] = this.x[i]! + this.vx[i]! * dtSub
@@ -385,6 +445,28 @@ export class PbfFluidSolver {
       const pW = this.pairW
       const pGx = this.pairGx
       const pGy = this.pairGy
+      if (granular && this.pairDn.length < nP) {
+        const cap = Math.max(nP, this.pairDn.length * 2)
+        this.pairDn = new Float64Array(cap)
+        this.pairNx = new Float64Array(cap)
+        this.pairNy = new Float64Array(cap)
+      }
+      const pDn = this.pairDn
+      const pNx = this.pairNx
+      const pNy = this.pairNy
+      if (granular) {
+        pDn.fill(0, 0, nP)
+        // Contact normal per pair, fixed for the substep (from the predicted positions).
+        for (let q = 0; q < nP; q++) {
+          const i = pI[q]!
+          const j = pJ[q]!
+          const dx = px[i]! - px[j]!
+          const dy = py[i]! - py[j]!
+          const r = Math.hypot(dx, dy) || 1
+          pNx[q] = dx / r
+          pNy[q] = dy / r
+        }
+      }
 
       bD.length = 0
       bNx.length = 0
@@ -474,12 +556,14 @@ export class PbfFluidSolver {
           const f = lam[i]! + lam[j]! - corrK * sc * sc * sc * sc
           const fx = f * pGx[q]!
           const fy = f * pGy[q]!
+          if (granular) pDn[q]! += Math.abs(fx * pNx[q]! + fy * pNy[q]!)
           dpx[i]! += fx
           dpy[i]! += fy
           dpx[j]! -= fx
           dpy[j]! -= fy
         }
         for (let i = 0; i < n; i++) {
+          if (granular && asleep(i)) continue
           let ddx = dpx[i]! + lam[i]! * gbx[i]!
           let ddy = dpy[i]! + lam[i]! * gby[i]!
           const dl = Math.hypot(ddx, ddy)
@@ -490,8 +574,10 @@ export class PbfFluidSolver {
           px[i]! += ddx
           py[i]! += ddy
         }
+        if (granular) this.grainFriction(pI, pJ, nP, pDn, Math.hypot(g.x, g.y) * dtSub * dtSub)
         collideAll()
       }
+
 
       for (let i = 0; i < n; i++) {
         // A solid push is penetration recovery, never velocity: solids do not move inside
@@ -500,6 +586,15 @@ export class PbfFluidSolver {
         const sx = solidDx[i]!
         const sy = solidDy[i]!
         const sc = Math.hypot(sx, sy)
+        if (granular && asleep(i)) {
+          // A solid moving into a sleeping grain wakes it; otherwise it does not move.
+          if (sc > 1e-6) still[i] = 0
+          else {
+            px[i] = this.x[i]!
+            py[i] = this.y[i]!
+            continue
+          }
+        }
         this.vx[i] = (px[i]! - sx - this.x[i]!) / dtSub
         this.vy[i] = (py[i]! - sy - this.y[i]!) / dtSub
         if (sc > 1e-8) {
@@ -528,7 +623,12 @@ export class PbfFluidSolver {
             }
           }
           const vt = this.vx[i]! * -ny + this.vy[i]! * nx
-          const vtf = vt * 0.92
+          // Grains: Coulomb against the solid (the push is the normal impulse per mass);
+          // liquid: a light slip.
+          const vtf =
+            fr[i]! > 0
+              ? Math.sign(vt) * Math.max(0, Math.abs(vt) - (fr[i]! * sc) / dtSub)
+              : vt * 0.92
           this.vx[i] = this.vx[i]! - -ny * vt + -ny * vtf
           this.vy[i] = this.vy[i]! - nx * vt + nx * vtf
         }
@@ -568,6 +668,7 @@ export class PbfFluidSolver {
         wsum[j]! += e * w
       }
       for (let i = 0; i < n; i++) {
+        if (granular && asleep(i)) continue
         const denom = 1 + wsum[i]!
         this.vx[i]! += dvx[i]! / denom
         this.vy[i]! += dvy[i]! / denom
@@ -577,10 +678,22 @@ export class PbfFluidSolver {
           this.vx[i]! *= s
           this.vy[i]! *= s
         }
-        if (Math.hypot(this.vx[i]!, this.vy[i]!) < V_REST) {
+        if (Math.hypot(this.vx[i]!, this.vy[i]!) < (fr[i]! > 0 ? GRAIN_REST : V_REST)) {
           this.vx[i] = 0
           this.vy[i] = 0
         }
+      }
+      if (granular) {
+        // A solid surface facing up within ~one spacing (sampled this substep) holds a grain.
+        const reach = this.spacing * 0.8
+        const onSolid = (i: number) => {
+          if (contact.hit[i]) return true
+          for (let c = bStart[i]!; c < bStart[i + 1]!; c++) {
+            if (bD[c]! < reach && bNy[c]! > 0.3) return true
+          }
+          return false
+        }
+        this.grainSleep(pI, pJ, nP, onSolid, dvx, dvy)
       }
     }
 
@@ -589,6 +702,109 @@ export class PbfFluidSolver {
     this.applySplashImpulses(world, bodyImpulse, buoyant)
     this.cullFallen()
     this.syncSnapshot()
+  }
+
+  /**
+   * Position-based Coulomb friction between touching grains (Macklin et al. 2014), run after
+   * each density iteration: the tangential part of a pair's relative displacement in this
+   * substep is removed while it stays under μ times the pair's normal (static), else reduced
+   * by that amount (kinetic). Gauss–Seidel, in place: Jacobi averaging was too weak to stop
+   * a pile from creeping flat. The normal is the pair's density correction so far, but at
+   * least one grain's weight: the surface grains of a pile are not compressed and would
+   * otherwise get no friction at all.
+   */
+  private grainFriction(
+    pI: Int32Array,
+    pJ: Int32Array,
+    nP: number,
+    pDn: Float64Array,
+    weight: number,
+  ): void {
+    const px = this.px
+    const py = this.py
+    const x = this.x
+    const y = this.y
+    const fr = this.friction
+    const still = this.still
+    const touch2 = (this.spacing * GRAIN_TOUCH) ** 2
+    for (let q = 0; q < nP; q++) {
+      const i = pI[q]!
+      const j = pJ[q]!
+      if (fr[i]! <= 0 || fr[j]! <= 0) continue
+      const dx = px[i]! - px[j]!
+      const dy = py[i]! - py[j]!
+      const r2 = dx * dx + dy * dy
+      if (r2 >= touch2 || r2 < 1e-18) continue
+      const r = Math.sqrt(r2)
+      const nx = dx / r
+      const ny = dy / r
+      const rx = px[i]! - x[i]! - (px[j]! - x[j]!)
+      const ry = py[i]! - y[i]! - (py[j]! - y[j]!)
+      const rn = rx * nx + ry * ny
+      const tx = rx - rn * nx
+      const ty = ry - rn * ny
+      const t = Math.hypot(tx, ty)
+      if (t < 1e-12) continue
+      const lim = 0.5 * (fr[i]! + fr[j]!) * Math.max(pDn[q]!, weight)
+      const k = t <= lim ? 1 : lim / t
+      // A sleeping grain is a fixed support: the awake one takes the whole correction.
+      const si = still[i]! >= GRAIN_SLEEP
+      const sj = still[j]! >= GRAIN_SLEEP
+      if (si && sj) continue
+      const ki = sj ? k : si ? 0 : 0.5 * k
+      const kj = si ? k : sj ? 0 : 0.5 * k
+      px[i]! -= tx * ki
+      py[i]! -= ty * ki
+      px[j]! += tx * kj
+      py[j]! += ty * kj
+    }
+  }
+
+  /**
+   * Sleep bookkeeping for grains at the end of a substep (velocities final): count slow,
+   * supported substeps; wake a sleeping grain hit by a fast neighbor or left unsupported.
+   * Support = a touching grain below, or a solid surface below within reach.
+   */
+  private grainSleep(
+    pI: Int32Array,
+    pJ: Int32Array,
+    nP: number,
+    supportedBySolid: (i: number) => boolean,
+    below: Float64Array,
+    hitFast: Float64Array,
+  ): void {
+    const n = this.n
+    const x = this.x
+    const y = this.y
+    const vx = this.vx
+    const vy = this.vy
+    const fr = this.friction
+    const still = this.still
+    const touch2 = (this.spacing * GRAIN_TOUCH) ** 2
+    const drop = this.spacing * 0.3
+    below.fill(0, 0, n)
+    hitFast.fill(0, 0, n)
+    for (let q = 0; q < nP; q++) {
+      const i = pI[q]!
+      const j = pJ[q]!
+      if (fr[i]! <= 0 || fr[j]! <= 0) continue
+      const dx = x[i]! - x[j]!
+      const dy = y[i]! - y[j]!
+      if (dx * dx + dy * dy >= touch2) continue
+      if (dy > drop) below[i] = 1
+      else if (dy < -drop) below[j] = 1
+      if (Math.hypot(vx[j]!, vy[j]!) > GRAIN_WAKE) hitFast[i] = 1
+      if (Math.hypot(vx[i]!, vy[i]!) > GRAIN_WAKE) hitFast[j] = 1
+    }
+    for (let i = 0; i < n; i++) {
+      if (fr[i]! <= 0) continue
+      const supported = below[i]! > 0 || supportedBySolid(i)
+      if (still[i]! >= GRAIN_SLEEP) {
+        if (hitFast[i]! > 0 || !supported) still[i] = 0
+        continue
+      }
+      still[i] = supported && Math.hypot(vx[i]!, vy[i]!) < GRAIN_REST ? still[i]! + 1 : 0
+    }
   }
 
   /**
@@ -1152,6 +1368,8 @@ export class PbfFluidSolver {
     const nvy = new Float64Array(next)
     const nd = new Float64Array(next)
     const nmu = new Float64Array(next)
+    const nfr = new Float64Array(next)
+    const nst = new Float64Array(next)
     const nsph = new Float64Array(next)
     this.xsphEps = new Float64Array(next)
     nx.set(this.x.subarray(0, this.n))
@@ -1162,6 +1380,8 @@ export class PbfFluidSolver {
     nvy.set(this.vy.subarray(0, this.n))
     nd.set(this.density.subarray(0, this.n))
     nmu.set(this.viscosity.subarray(0, this.n))
+    nfr.set(this.friction.subarray(0, this.n))
+    nst.set(this.still.subarray(0, this.n))
     nsph.set(this.sphDensity.subarray(0, this.n))
     this.x = nx
     this.y = ny
@@ -1171,6 +1391,8 @@ export class PbfFluidSolver {
     this.vy = nvy
     this.density = nd
     this.viscosity = nmu
+    this.friction = nfr
+    this.still = nst
     this.rho = new Float64Array(next)
     this.lambda = new Float64Array(next)
     this.sphDensity = nsph
@@ -1194,6 +1416,8 @@ export class PbfFluidSolver {
         this.opacity[w] = this.opacity[i]!
         this.density[w] = this.density[i]!
         this.viscosity[w] = this.viscosity[i]!
+        this.friction[w] = this.friction[i]!
+        this.still[w] = this.still[i]!
         this.sphDensity[w] = this.sphDensity[i]!
       }
       w++
@@ -1213,6 +1437,7 @@ export class PbfFluidSolver {
         color: this.color[i]!,
         opacity: this.opacity[i]!,
         density: this.sphDensity[i]!,
+        granular: this.friction[i]! > 0,
       }
     }
   }
@@ -1262,8 +1487,9 @@ function seedVolume(
       volumeId: vol.id,
       color: mat.color,
       opacity: mat.opacity,
-      density: mat.density,
+      density: mat.granular ? mat.density * GRANULAR_BEARING : mat.density,
       viscosity: mat.viscosity,
+      friction: mat.granular ?? 0,
     })
   }
   // Seeds that did not fit the particle budget: water the user asked for and did not get.

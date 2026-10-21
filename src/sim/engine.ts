@@ -9,9 +9,12 @@ import { jointToDesc, reattachJoints } from '../scene/joints.ts'
 import {
   cloneDocument,
   DEFAULT_AIR_DENSITY,
+  DEFAULT_GRAVITY_G,
   type SceneBody,
   type SceneDocument,
+  type SceneFan,
 } from '../scene/document.ts'
+import { fanInWorld } from '../scene/fans.ts'
 import { pickBody } from '../scene/picking.ts'
 import { AnalyticFluidSolver } from '../fluids/analytic/AnalyticFluid.ts'
 import { PbfFluidSolver } from '../fluids/pbf/PbfFluid.ts'
@@ -20,6 +23,9 @@ import {
   FAN_WATER_RATE,
   fanForce,
   fanParticlePush,
+  gravityPull,
+  shapeArea,
+  thrusterActive,
   thrusterWorld,
   windForce,
 } from './forces.ts'
@@ -301,6 +307,7 @@ export class SimulationEngine {
     this.particles.step(this.world, PHYSICS_DT, this.doc.bodies)
     const t1 = performance.now()
     this.world.step(PHYSICS_DT)
+    this.applyMutualGravity(this.world, 'post')
     const t2 = performance.now()
     this.world.writeBodies(this.curr)
     this.syncCurrMap()
@@ -320,30 +327,102 @@ export class SimulationEngine {
    */
   private applyAuthoredForces(world: PhysicsWorld, t: number): void {
     const wind = this.doc.world.wind
-    const fans = this.doc.fans ?? []
     const airDensity = wind?.airDensity ?? DEFAULT_AIR_DENSITY
-    if (fans.length && this.particles.particleCount) {
-      this.particles.applyVelocityChange((x, y, vx, vy, out) =>
-        fanParticlePush(fans, t, PHYSICS_DT, FAN_WATER_RATE, x, y, vx, vy, out),
-      )
+    // Fans in world space this step; a mounted fan follows its body (skipped if it is gone).
+    const fans: SceneFan[] = []
+    for (const fan of this.doc.fans ?? []) {
+      const placed = fanInWorld(fan, fan.bodyId ? this.currMap.get(fan.bodyId) : null)
+      if (placed) fans.push(placed)
     }
+    if (fans.length && this.particles.particleCount) {
+      const fixed = fans.filter((f) => !f.bodyId)
+      if (fixed.length) {
+        this.particles.applyVelocityChange((x, y, vx, vy, out) =>
+          fanParticlePush(fixed, t, PHYSICS_DT, FAN_WATER_RATE, x, y, vx, vy, out),
+        )
+      }
+      // A propeller: the momentum it gives the water pushes its body the other way.
+      for (const fan of fans) {
+        if (!fan.bodyId) continue
+        const one = [fan]
+        const p = this.particles.applyVelocityChange((x, y, vx, vy, out) =>
+          fanParticlePush(one, t, PHYSICS_DT, FAN_WATER_RATE, x, y, vx, vy, out),
+        )
+        if (p.x === 0 && p.y === 0) continue
+        const fx = -p.x / PHYSICS_DT
+        const fy = -p.y / PHYSICS_DT
+        world.applyForce(fan.bodyId, fx, fy, { x: fan.x, y: fan.y })
+        this.appliedForces.push({ bodyId: fan.bodyId, x: fan.x, y: fan.y, fx, fy })
+      }
+    }
+    this.applyMutualGravity(world, 'pre')
     for (const body of this.doc.bodies) {
       if (body.type !== 'dynamic') continue
       if (!body.thruster && !wind && !fans.length) continue
       const snap = this.currMap.get(body.id)
       if (!snap) continue
-      if (body.thruster && body.thruster.force > 0) {
+      if (body.thruster && body.thruster.force > 0 && thrusterActive(body.thruster, t)) {
         const f = thrusterWorld(body.thruster, snap)
         world.applyForce(body.id, f.fx, f.fy, { x: f.x, y: f.y })
         this.appliedForces.push({ bodyId: body.id, ...f })
       }
-      const airForces = fans.map((fan) => fanForce(fan, body.shape, snap, t, airDensity))
+      const airForces = fans
+        .filter((fan) => fan.bodyId !== body.id)
+        .map((fan) => fanForce(fan, body.shape, snap, t, airDensity))
       if (wind) airForces.push(windForce(wind, body.shape, snap, t))
       for (const f of airForces) {
         if (f.x === 0 && f.y === 0) continue
         const at = { x: snap.comX, y: snap.comY }
         world.applyForce(body.id, f.x, f.y, at)
         this.appliedForces.push({ bodyId: body.id, x: at.x, y: at.y, fx: f.x, fy: f.y })
+      }
+    }
+  }
+
+  /**
+   * Mutual gravity between bodies marked `attracts`, integrated as leapfrog (kick–drift–
+   * kick): half an impulse from the positions before the step ('pre'), Rapier drifts, half
+   * from the positions after it ('post'). A force held over the step gains energy in
+   * Rapier's integration (orbits spiralled out ~4 % per orbit); leapfrog is symplectic.
+   * A fixed or kinematic body attracts with its authored mass (Rapier gives it none) and
+   * does not move. Pairs are summed once (Newton's third law by construction).
+   */
+  private applyMutualGravity(world: PhysicsWorld, half: 'pre' | 'post'): void {
+    const G = this.doc.world.gravityG ?? DEFAULT_GRAVITY_G
+    if (!(G > 0)) return
+    const list: { id: BodyId; m: number; x: number; y: number; moves: boolean }[] = []
+    for (const body of this.doc.bodies) {
+      if (!body.attracts) continue
+      const snap = half === 'pre' ? this.currMap.get(body.id) : world.getBody(body.id)
+      if (!snap) continue
+      const moves = body.type === 'dynamic'
+      const m =
+        moves && snap.mass > 0
+          ? snap.mass
+          : body.massMode === 'explicit' && body.mass
+            ? body.mass
+            : body.density * shapeArea(body.shape)
+      if (m > 0) list.push({ id: body.id, m, x: snap.comX, y: snap.comY, moves })
+    }
+    for (let a = 0; a < list.length; a++) {
+      for (let b = a + 1; b < list.length; b++) {
+        const A = list[a]!
+        const B = list[b]!
+        if (!A.moves && !B.moves) continue
+        const f = gravityPull(G, A.m, A.x, A.y, B.m, B.x, B.y)
+        const j = PHYSICS_DT / 2
+        if (A.moves) {
+          world.applyImpulse(A.id, f.x * j, f.y * j, { x: A.x, y: A.y })
+          if (half === 'pre') {
+            this.appliedForces.push({ bodyId: A.id, x: A.x, y: A.y, fx: f.x, fy: f.y })
+          }
+        }
+        if (B.moves) {
+          world.applyImpulse(B.id, -f.x * j, -f.y * j, { x: B.x, y: B.y })
+          if (half === 'pre') {
+            this.appliedForces.push({ bodyId: B.id, x: B.x, y: B.y, fx: -f.x, fy: -f.y })
+          }
+        }
       }
     }
   }
