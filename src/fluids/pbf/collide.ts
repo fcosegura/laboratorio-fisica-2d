@@ -319,6 +319,34 @@ export function cacheSolids(world: PhysicsWorld, radius: number): CachedSolid[] 
   return out
 }
 
+/**
+ * Accumulate solid-boundary terms for a particle at (x, y): for every cached collider within
+ * `reach` (cache built with that expansion), the signed distance d to its surface and outward
+ * normal n, fed to `add(d, nx, ny)`. Inside a solid d < 0 (callers clamp).
+ */
+export function forEachNearSurface(
+  x: number,
+  y: number,
+  reach: number,
+  solids: readonly CachedSolid[],
+  fromX: number,
+  fromY: number,
+  add: (d: number, nx: number, ny: number) => void,
+): void {
+  for (const solid of solids) {
+    for (const col of solid.colliders) {
+      if (x < col.minX || x > col.maxX || y < col.minY || y > col.maxY) continue
+      const hit = pushOutOfShape(x, y, reach, col.shape, col.ox, col.oy, col.ang, fromX, fromY)
+      if (!hit) continue
+      // hit = contact + n·reach, so n is exact even when (x, y) is inside the solid.
+      const nx = (hit.x - hit.cx) / reach
+      const ny = (hit.y - hit.cy) / reach
+      const d = (x - hit.cx) * nx + (y - hit.cy) * ny
+      add(d, nx, ny)
+    }
+  }
+}
+
 /** Push particle `i` out of cached non-sensor colliders (AABB skip, then `pushOutOfShape`). */
 export function collideSolidCached(
   px: Float64Array,

@@ -17,10 +17,16 @@ import {
   waveRadiationForce,
 } from '../analytic/AnalyticFluid.ts'
 import { shapeToWorldPolygons } from '../bodyPolygon.ts'
-import { collideSolidCached, cacheSolids, pushOutOfShape } from './collide.ts'
+import { collideSolidCached, cacheSolids, forEachNearSurface, pushOutOfShape } from './collide.ts'
 import { estimateFreeSurfaceD } from './freeSurface.ts'
-import { CountingSortGrid, buildCountingSort } from './hash.ts'
-import { clavetRestDensity, xsphEpsilon } from './kernels.ts'
+import { CountingSortGrid, PairList, buildCountingSort } from './hash.ts'
+import {
+  clavetRestDensity,
+  clavetWallTables,
+  wallLookup,
+  xsphEpsilon,
+  type WallTables,
+} from './kernels.ts'
 
 /** Snapshot particle for render / HUD (plain data, no solver internals). */
 export type FluidParticle = {
@@ -36,12 +42,21 @@ export type FluidParticle = {
 }
 
 export const PBF_DEFAULT_SPACING = 0.1
-export const PBF_MAX_PARTICLES = 2200
+/**
+ * Particle budget. ~3 µs/particle/step in the browser (pair-list solver): 3000 leaves room
+ * for drawing inside a 60 Hz frame. Deeper pools than this allows start to churn (the
+ * compressible solver squeezes ~4× at depth), so raising it needs an incompressible solver.
+ */
+export const PBF_MAX_PARTICLES = 3000
 
 const SPH_SUBSTEPS = 2
 const SPH_H_FACTOR = 2.2
 const SPH_COLLISION_RADIUS = 0.5
 const SPH_DRAW_RADIUS = 0.65
+/**
+ * Clavet stiffness (m/s²). Higher k compresses less but boils at this step size even with
+ * dt²·k held fixed by more substeps (measured k = 20..200): the water stays compressible.
+ */
 const SPH_K = 10
 const SPH_K_NEAR = 5
 const CULL_Y = -40
@@ -123,7 +138,13 @@ export class PbfFluidSolver {
   private spacing = PBF_DEFAULT_SPACING
   private h = PBF_DEFAULT_SPACING * SPH_H_FACTOR
   private rho0 = clavetRestDensity(PBF_DEFAULT_SPACING, PBF_DEFAULT_SPACING * SPH_H_FACTOR)
+  private wall: WallTables = clavetWallTables(
+    PBF_DEFAULT_SPACING,
+    PBF_DEFAULT_SPACING * SPH_H_FACTOR,
+  )
   private readonly hash = new CountingSortGrid()
+  private readonly pairs = new PairList()
+  private xsphEps: Float64Array = new Float64Array(0)
   /** Collision radius of a particle. */
   get particleRadius(): number {
     return this.radius
@@ -151,12 +172,16 @@ export class PbfFluidSolver {
   /** Smoothed free-surface plane offset per floating body (Archimedes path). */
   private readonly surfaceD = new Map<string, number>()
 
+  /** Seeds dropped because the budget was full (reset on rebuild / clear). */
+  truncatedSeeds = 0
+
   get particleCount(): number {
     return this.n
   }
 
   clear(): void {
     this.n = 0
+    this.truncatedSeeds = 0
     this.particles.length = 0
     this.volumeId = []
     this.color = []
@@ -180,12 +205,14 @@ export class PbfFluidSolver {
     // One kernel (h, ρ0) for every particle: a second volume reuses the live spacing.
     // Changing it would shift the rest density of the particles already settled.
     const fixedSpacing = this.n > 0 ? this.spacing : null
-    const { seeds, spacing } = seedVolume(vol, this.n, world, fixedSpacing)
+    const { seeds, spacing, truncated } = seedVolume(vol, this.n, world, fixedSpacing)
+    this.truncatedSeeds += truncated
     if (!seeds.length) return 0
     this.spacing = spacing
     this.radius = spacing * SPH_COLLISION_RADIUS
     this.h = spacing * SPH_H_FACTOR
     this.rho0 = clavetRestDensity(spacing, this.h)
+    this.wall = clavetWallTables(spacing, this.h)
     this.ensureCap(this.n + seeds.length)
     for (const s of seeds) {
       const i = this.n
@@ -243,6 +270,15 @@ export class PbfFluidSolver {
     const dtSub = dt / SPH_SUBSTEPS
     const dtSub2 = dtSub * dtSub
     const solids = cacheSolids(world, rCol)
+    // Same solids with AABBs grown by h: the reach of the boundary density / pressure.
+    const solidsH = cacheSolids(world, h)
+    const wall = this.wall
+    const wRho = new Float64Array(n)
+    const wRhoN = new Float64Array(n)
+    const wPx = new Float64Array(n)
+    const wPy = new Float64Array(n)
+    const wPnx = new Float64Array(n)
+    const wPny = new Float64Array(n)
     const bodyImpulse = new Map<BodyId, { x: number; y: number; jx: number; jy: number }>()
     const solidDx = new Float64Array(n)
     const solidDy = new Float64Array(n)
@@ -293,22 +329,58 @@ export class PbfFluidSolver {
       const pressNear = this.pressNear
       rho.fill(1, 0, n)
       rhoNear.fill(1, 0, n)
-      for (let i = 0; i < n; i++) {
-        this.hash.queryNeighbors(i, (j) => {
-          if (j <= i) return
-          const dx = this.px[i]! - this.px[j]!
-          const dy = this.py[i]! - this.py[j]!
-          const d2 = dx * dx + dy * dy
-          if (d2 >= h2 || d2 < 1e-14) return
-          const r = Math.sqrt(d2)
-          const w = 1 - r / h
-          const w2 = w * w
-          rho[i]! += w2
-          rho[j]! += w2
-          const w3 = w2 * w
-          rhoNear[i]! += w3
-          rhoNear[j]! += w3
-        })
+      // Solid boundary: ghost-lattice density and the normal weights of its pressure push.
+      wRho.fill(0)
+      wRhoN.fill(0)
+      wPx.fill(0)
+      wPy.fill(0)
+      wPnx.fill(0)
+      wPny.fill(0)
+      if (solidsH.length) {
+        for (let i = 0; i < n; i++) {
+          forEachNearSurface(
+            this.px[i]!,
+            this.py[i]!,
+            h,
+            solidsH,
+            this.x[i]!,
+            this.y[i]!,
+            (d, nx, ny) => {
+              const r1 = wallLookup(wall, wall.push, d)
+              const r2 = wallLookup(wall, wall.pushNear, d)
+              wRho[i]! += wallLookup(wall, wall.rho, d)
+              wRhoN[i]! += wallLookup(wall, wall.rhoNear, d)
+              wPx[i]! += r1 * nx
+              wPy[i]! += r1 * ny
+              wPnx[i]! += r2 * nx
+              wPny[i]! += r2 * ny
+            },
+          )
+          rho[i]! += wRho[i]!
+          rhoNear[i]! += wRhoN[i]!
+        }
+      }
+      // One grid walk per substep; density, relaxation and XSPH iterate this list in the
+      // order the old per-pass grid queries used (the relaxation is order-dependent).
+      const pairs = this.pairs
+      this.hash.collectPairs(this.px, this.py, h2, pairs)
+      const pI = pairs.i
+      const pJ = pairs.j
+      const nP = pairs.n
+      const px = this.px
+      const py = this.py
+      for (let q = 0; q < nP; q++) {
+        const i = pI[q]!
+        const j = pJ[q]!
+        const dx = px[i]! - px[j]!
+        const dy = py[i]! - py[j]!
+        const w = 1 - Math.sqrt(dx * dx + dy * dy) / h
+        const w2 = w * w
+        rho[i]! += w2
+        rho[j]! += w2
+        const w3 = w2 * w
+        rhoNear[i]! += w3
+        rhoNear[j]! += w3
       }
 
       for (let i = 0; i < n; i++) {
@@ -317,26 +389,35 @@ export class PbfFluidSolver {
         this.sphDensity[i] = rho[i]! / rho0
       }
 
-      for (let i = 0; i < n; i++) {
-        this.hash.queryNeighbors(i, (j) => {
-          if (j <= i) return
-          const dx = this.px[i]! - this.px[j]!
-          const dy = this.py[i]! - this.py[j]!
-          const d2 = dx * dx + dy * dy
-          if (d2 >= h2 || d2 < 1e-14) return
-          const r = Math.sqrt(d2)
-          const q = r / h
-          const w = 1 - q
-          const mag =
-            dtSub2 * ((press[i]! + press[j]!) * 0.5 + (pressNear[i]! + pressNear[j]!) * 0.5 * w) * w
-          const invR = 1 / r
-          const mx = mag * 0.5 * dx * invR
-          const my = mag * 0.5 * dy * invR
-          this.px[i]! += mx
-          this.py[i]! += my
-          this.px[j]! -= mx
-          this.py[j]! -= my
-        })
+      for (let q = 0; q < nP; q++) {
+        const i = pI[q]!
+        const j = pJ[q]!
+        const dx = px[i]! - px[j]!
+        const dy = py[i]! - py[j]!
+        const d2 = dx * dx + dy * dy
+        if (d2 >= h2 || d2 < 1e-14) continue
+        const r = Math.sqrt(d2)
+        const w = 1 - r / h
+        const mag =
+          dtSub2 * ((press[i]! + press[j]!) * 0.5 + (pressNear[i]! + pressNear[j]!) * 0.5 * w) * w
+        const invR = 1 / r
+        const mx = mag * 0.5 * dx * invR
+        const my = mag * 0.5 * dy * invR
+        px[i]! += mx
+        py[i]! += my
+        px[j]! -= mx
+        py[j]! -= my
+      }
+
+      // Ghosts carry the particle's own pressure (mirror) and never move: the particle takes
+      // the pair's half share, like any neighbor.
+      if (solidsH.length) {
+        for (let i = 0; i < n; i++) {
+          if (wRho[i] === 0) continue
+          const f = dtSub2 * 0.5
+          px[i]! += f * (press[i]! * wPx[i]! + pressNear[i]! * wPnx[i]!)
+          py[i]! += f * (press[i]! * wPy[i]! + pressNear[i]! * wPny[i]!)
+        }
       }
 
       for (let i = 0; i < n; i++) {
@@ -393,26 +474,29 @@ export class PbfFluidSolver {
       dvx.fill(0)
       dvy.fill(0)
       wsum.fill(0)
-      for (let i = 0; i < n; i++) {
-        const epsI = xsphEpsilon(this.viscosity[i]!)
-        this.hash.queryNeighbors(i, (j) => {
-          if (j <= i) return
-          const dx = this.x[i]! - this.x[j]!
-          const dy = this.y[i]! - this.y[j]!
-          const d2 = dx * dx + dy * dy
-          if (d2 >= h2 || d2 < 1e-14) return
-          const r = Math.sqrt(d2)
-          const w = 1 - r / h
-          const eps = 0.5 * (epsI + xsphEpsilon(this.viscosity[j]!))
-          const dvxP = eps * (this.vx[j]! - this.vx[i]!) * w
-          const dvyP = eps * (this.vy[j]! - this.vy[i]!) * w
-          dvx[i]! += dvxP
-          dvy[i]! += dvyP
-          dvx[j]! -= dvxP
-          dvy[j]! -= dvyP
-          wsum[i]! += eps * w
-          wsum[j]! += eps * w
-        })
+      const eps = this.xsphEps
+      for (let i = 0; i < n; i++) eps[i] = xsphEpsilon(this.viscosity[i]!)
+      const x = this.x
+      const y = this.y
+      const vx = this.vx
+      const vy = this.vy
+      for (let q = 0; q < nP; q++) {
+        const i = pI[q]!
+        const j = pJ[q]!
+        const dx = x[i]! - x[j]!
+        const dy = y[i]! - y[j]!
+        const d2 = dx * dx + dy * dy
+        if (d2 >= h2 || d2 < 1e-14) continue
+        const w = 1 - Math.sqrt(d2) / h
+        const e = 0.5 * (eps[i]! + eps[j]!)
+        const dvxP = e * (vx[j]! - vx[i]!) * w
+        const dvyP = e * (vy[j]! - vy[i]!) * w
+        dvx[i]! += dvxP
+        dvy[i]! += dvyP
+        dvx[j]! -= dvxP
+        dvy[j]! -= dvyP
+        wsum[i]! += e * w
+        wsum[j]! += e * w
       }
       for (let i = 0; i < n; i++) {
         const denom = 1 + wsum[i]!
@@ -967,6 +1051,7 @@ export class PbfFluidSolver {
     const npress = new Float64Array(next)
     const npressN = new Float64Array(next)
     const nsph = new Float64Array(next)
+    this.xsphEps = new Float64Array(next)
     nx.set(this.x.subarray(0, this.n))
     ny.set(this.y.subarray(0, this.n))
     npx.set(this.px.subarray(0, this.n))
@@ -1047,7 +1132,7 @@ function seedVolume(
   already: number,
   world: PhysicsWorld | null | undefined,
   fixedSpacing: number | null,
-): { seeds: Seed[]; spacing: number } {
+): { seeds: Seed[]; spacing: number; truncated: number } {
   const mat = getFluid(vol.materialId)
   let spacing = fixedSpacing ?? (vol.spacing > 0 ? vol.spacing : PBF_DEFAULT_SPACING)
   let filled = fillPolygon(vol.polygon, spacing)
@@ -1060,7 +1145,8 @@ function seedVolume(
   const amp = spacing * 0.12
   let rng = hashVolumeId(vol.id)
   const out: Seed[] = []
-  for (let i = 0; i < filled.length && out.length < room; i++) {
+  let i = 0
+  for (; i < filled.length && out.length < room; i++) {
     const p = filled[i]!
     rng = lcg(rng)
     const jx = (rng / 4294967296) * 2 * amp - amp
@@ -1079,7 +1165,8 @@ function seedVolume(
       viscosity: mat.viscosity,
     })
   }
-  return { seeds: out, spacing }
+  // Seeds that did not fit the particle budget: water the user asked for and did not get.
+  return { seeds: out, spacing, truncated: filled.length - i }
 }
 
 function hashVolumeId(id: string): number {

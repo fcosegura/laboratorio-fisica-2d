@@ -35,6 +35,7 @@ import { bodyToDesc } from '../scene/builder.ts'
 import { jointToDesc } from '../scene/joints.ts'
 import { fluidOverlapWarning } from '../scene/fluidOverlap.ts'
 import { parseDocument, serializeDocument } from '../scene/schema.ts'
+import { PBF_MAX_PARTICLES } from '../fluids/pbf/PbfFluid.ts'
 import { SimulationEngine } from '../sim/engine.ts'
 import { LabInput } from './LabInput.ts'
 import type { GraphChannel, LabStore } from './store.ts'
@@ -475,6 +476,8 @@ export class LabRuntime {
       bodyCount: this.engine.doc.bodies.length,
       fluidCount: this.engine.doc.fluidRegions.length + this.engine.doc.fluidVolumes.length,
       particleCount: this.engine.particles.particleCount,
+      particlesTruncated: this.engine.particles.truncatedSeeds,
+      particleLimit: PBF_MAX_PARTICLES,
       gravityPreset: this.engine.doc.world.gravityPreset,
       timings: {
         physics: this.engine.timings.physics,

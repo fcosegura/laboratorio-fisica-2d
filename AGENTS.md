@@ -82,6 +82,9 @@ Contratos:
 - Arrastre del fluido: `stableDamping` limita `c ≤ m/dt` (nunca invierte ni amplifica v). Por debajo del límite es el explícito sin cambios: las calibraciones de SPH y tanques dependen de ello.
 - Polígono hidrostático de círculo / cápsula: escalado para conservar el área exacta (umbral de flotación = ρ_fluido).
 - SPH: un solo kernel (`h`, `ρ0`) para todas las partículas; un segundo volumen reutiliza el espaciado vivo.
+- SPH, rendimiento: una lista de pares por subpaso (`CountingSortGrid.collectPairs` → `PairList`) alimenta densidad, relajación y XSPH. El orden de los pares es el de `i` ascendente: la relajación de Clavet es secuencial y otro orden (p. ej. media celda) la desestabiliza. ~3 µs/partícula/paso en navegador.
+- SPH, contorno sólido: densidad y empuje de presión de partículas fantasma tras la superficie (`clavetWallTables`, `forEachNearSurface`), tabulados por distancia. Sin ellos una partícula junto a la pared tiene falta de vecinos y el agua la aprieta contra la pared: filas de partículas apiladas en paredes inclinadas. No escales la contribución en vértices convexos: medido, empeora (vuelve la bomba en la esquina).
+- SPH, límite: `PBF_MAX_PARTICLES = 3000`. Lo que no cabe se descarta y el HUD lo avisa (`particlesTruncated`).
 - SPH → sólidos (`applyBuoyancy`), modelo híbrido:
   - **Agua en ambos flancos** (flotador o sumergido; con histéresis `FLOAT_HOLD_STEPS` para el oleaje): Arquímedes recortado en la superficie estimada en los flancos (`applyArchimedes`), aplicado en el centro de carena. Sin retraso en la fuerza; cabeceo y balanceo amortiguados por radiación de olas (`SPH_HEAVE_DAMPING`, `SPH_ROLL_DAMPING`), que solo ven velocidades y no mueven el calado.
   - **El resto** (recipientes, paredes con agua a un lado, cuerpos secos junto al agua): presión hidrostática integrada solo sobre el contorno **mojado**. El vaso soporta el peso de su agua; un cuerpo seco tras una pared no recibe nada. Las columnas de cada tramo solo cuentan partículas del lado exterior de su cara.
@@ -91,7 +94,7 @@ Contratos:
 
 - SPH: velocidad de partícula limitada a 8 m/s (`V_MAX`); el agua cae más despacio que un sólido desde más de ~3 m.
 - SPH: el acoplamiento partícula → cuerpo usa `COUPLING = 0.1` con tope `MAX_BODY_IMPULSE`; no conserva momento. La sustentación viene de Arquímedes / presión hidrostática, no de la presión SPH.
-- SPH: el agua es compresible (≈40 % a reposo en un vaso; ρ/ρ0 ≈ 1,4). El volumen no se conserva y los charcos quedan más bajos. Pendiente (rigidez de presión / subpasos).
+- SPH: el agua es compresible (ρ/ρ0 ≈ 1,45 a reposo en un vaso, hasta ~3,5 en el fondo de un depósito de 4–5 m). Subir `SPH_K` hierve incluso manteniendo dt²·k con más subpasos (medido k = 20…200). En depósitos hondos con un sólido sumergido puede quedar un remolino persistente junto a una esquina, según dónde caiga el sólido. Arreglo real: solver incompresible (PBF).
 - Flotadores (tanque analítico y SPH): el amortiguamiento por radiación de olas es un modelo, no ondas simuladas.
 - El empuje se multiplica por el `gravityScale` del cuerpo (en rigor depende de la gravedad del fluido). Elección pedagógica: la fracción sumergida en equilibrio no depende de `gravityScale`.
 - Combinación de contacto: rozamiento `Min`, restitución `Max` (el hielo desliza, la goma rebota), no la media geométrica habitual.
@@ -117,7 +120,7 @@ Contratos:
 
 Ya está corregido (no reviertas): arrastre en pausa con `orig` de la pose viva; `bodyToDesc` unificado; cola de `reload`; guardias `freed`; AABBs de cápsula/convex/polyline; picking por geometría; `appliedForces` por paso; `Num` con confirmación; `syncWorld` incremental en undo/redo; transacciones de historial; `LabInput` separado de `LabRuntime`; edición de vértices de tanques; capas `trajectories` / `colliders` reales; asas de rotar / escalar; cinemático por velocidad (`kinematicVelocityBased`); contactos leídos por punto del manifold (no por índice del solver); `clipPolygon` acepta cualquier sentido de giro.
 
-Sigue abierto: tests para lo anterior (aplazados a propósito); orden de las uniones restauradas por undo (se añaden al final, no en su índice).
+Sigue abierto: tests para lo anterior (aplazados a propósito); orden de las uniones restauradas por undo (se añaden al final, no en su índice); SPH incompresible (compresión y remolino en depósitos hondos); el servidor de desarrollo se cuelga a veces al recargar en caliente con la app abierta.
 
 ## Pruebas
 

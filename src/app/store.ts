@@ -73,6 +73,10 @@ export type LabUiState = {
   bodyCount: number
   fluidCount: number
   particleCount: number
+  /** Partículas de agua libre descartadas por el límite (0 = ninguna). */
+  particlesTruncated: number
+  /** Máximo de partículas de agua libre del motor. */
+  particleLimit: number
   timings: Timings
   canUndo: boolean
   canRedo: boolean
@@ -105,6 +109,8 @@ export const useLabStore = create<LabUiState>(() => ({
   bodyCount: 0,
   fluidCount: 0,
   particleCount: 0,
+  particlesTruncated: 0,
+  particleLimit: 0,
   timings: { physics: 0, fluids: 0, render: 0, frame: 0, steps: 0, dropped: 0 },
   canUndo: false,
   canRedo: false,
