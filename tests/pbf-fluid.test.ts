@@ -552,7 +552,9 @@ describe('SPH Clavet particle fluid', () => {
     engine.play()
     for (let i = 0; i < 360; i++) engine.advance(1 / 60)
     const hull = engine.curr.find((b) => b.id === 'body:hull')!
-    const surfaceY = poolSurfaceY(engine.particles.particles, hull.x, 0.9)
+    // Flank surface, like the solver (see the box float test): the 85th percentile of all
+    // heights sits ~0.15 m below the top of an incompressible pool.
+    const surfaceY = flankSurfaceY(engine.particles.particles, hull.x, 0.4, 1.0)
     expect(engine.particles.buoyancyDebug.some((d) => d.bodyId === 'body:hull')).toBe(true)
     expect(hull.y).toBeGreaterThan(0.28)
     expect(hull.y).toBeLessThan(surfaceY + 0.35)

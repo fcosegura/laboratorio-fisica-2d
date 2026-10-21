@@ -1,6 +1,7 @@
 /**
- * Clavet double-density kernels (2D). Rest density is measured on the same
- * hexagonal lattice used to seed volumes — never a copied constant.
+ * Density kernel W(r) = (1 − r/h)² (2D), the one Clavet's double density used, now driving
+ * the PBF density constraint. Normalization is irrelevant: ρ0 is measured on the same
+ * hexagonal lattice used to seed volumes — never a copied constant — and C_i = ρ_i / ρ0 − 1.
  */
 
 /**
@@ -8,11 +9,33 @@
  * inside the disk of radius `h`, including the center particle.
  */
 export function clavetRestDensity(s: number, h: number): number {
-  if (s <= 0 || h <= 0) return 1
+  let rho = 0
+  forEachLatticeNeighbor(s, h, (w) => {
+    rho += w * w
+  })
+  return rho || 1
+}
+
+/**
+ * Σ_j |∇W(r_ij)|² / ρ0² on the rest lattice: the PBF λ denominator of an interior particle
+ * at rest (the own-gradient term is 0 by symmetry). Scales the relaxation ε and s_corr.
+ */
+export function pbfRestGradSq(s: number, h: number): number {
+  const rho0 = clavetRestDensity(s, h)
+  let sum = 0
+  forEachLatticeNeighbor(s, h, (w, r) => {
+    if (r < 1e-12) return
+    const g = (2 * w) / h / rho0
+    sum += g * g
+  })
+  return sum || 1
+}
+
+function forEachLatticeNeighbor(s: number, h: number, visit: (w: number, r: number) => void): void {
+  if (s <= 0 || h <= 0) return
   const rowH = s * 0.8660254037844386
   const nRows = Math.ceil(h / rowH) + 2
   const nCols = Math.ceil(h / s) + 2
-  let rho = 0
   for (let row = -nRows; row <= nRows; row++) {
     const y = row * rowH
     const xOff = (row & 1) !== 0 ? s * 0.5 : 0
@@ -20,11 +43,9 @@ export function clavetRestDensity(s: number, h: number): number {
       const x = col * s + xOff
       const r = Math.hypot(x, y)
       if (r >= h) continue
-      const w = 1 - r / h
-      rho += w * w
+      visit(1 - r / h, r)
     }
   }
-  return rho
 }
 
 export function xsphEpsilon(mu: number): number {
@@ -40,32 +61,26 @@ export function xsphEpsilon(mu: number): number {
  * particle at a wall misses half its neighbors, reads under-dense, and the fluid presses it
  * into the wall (pumping water up slanted walls and around corners).
  *
- * - rho / rhoNear: Σ w², Σ w³ over the ghosts (added to the particle's densities).
- * - push / pushNear: Σ w (n̂·r̂), Σ w² (n̂·r̂): normal weights of the Clavet relaxation push
- *   from ghosts carrying the particle's own pressure (mirror).
+ * - rho: Σ w² over the ghosts (added to the particle's density).
+ * - push: Σ w (n̂·r̂), so the ghosts' density gradient is ∇ρ = −(2/h)·push·n̂ (they never
+ *   move: it enters the particle's own constraint gradient only).
  */
 export type WallTables = {
   h: number
   samples: number
   rho: Float64Array
-  rhoNear: Float64Array
   push: Float64Array
-  pushNear: Float64Array
 }
 
 export function clavetWallTables(s: number, h: number, samples = 64): WallTables {
   const rho = new Float64Array(samples + 1)
-  const rhoNear = new Float64Array(samples + 1)
   const push = new Float64Array(samples + 1)
-  const pushNear = new Float64Array(samples + 1)
   const rowH = s * 0.8660254037844386
   const nCols = Math.ceil(h / s) + 2
   for (let k = 0; k <= samples; k++) {
     const d = (k / samples) * h
     let r2 = 0
-    let r3 = 0
     let p1 = 0
-    let p2 = 0
     for (const phase of [0, 0.5]) {
       for (let row = 1; ; row++) {
         const dz = d - (s * 0.5 - row * rowH)
@@ -75,20 +90,15 @@ export function clavetWallTables(s: number, h: number, samples = 64): WallTables
           const r = Math.hypot(x, dz)
           if (r >= h || r < 1e-12) continue
           const w = 1 - r / h
-          const cn = dz / r
           r2 += w * w
-          r3 += w * w * w
-          p1 += w * cn
-          p2 += w * w * cn
+          p1 += (w * dz) / r
         }
       }
     }
     rho[k] = r2 / 2
-    rhoNear[k] = r3 / 2
     push[k] = p1 / 2
-    pushNear[k] = p2 / 2
   }
-  return { h, samples, rho, rhoNear, push, pushNear }
+  return { h, samples, rho, push }
 }
 
 /** Linear lookup of a wall table at distance d (clamped to [0, h]). */

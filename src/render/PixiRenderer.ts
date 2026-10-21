@@ -386,7 +386,7 @@ export class PixiRenderer {
       })
     }
 
-    // SPH Clavet particles. Draw radius is larger than collision so discs overlap
+    // PBF particles. Draw radius is larger than collision so discs overlap
     // into a puddle; concentric falloff avoids a gravel look.
     const drawR = engine.particles.particleDrawRadius
     for (const p of engine.particles.particles) {

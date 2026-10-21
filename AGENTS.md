@@ -6,7 +6,7 @@ Sandbox de física 2D en el navegador. React no calcula física. El bucle vive e
 SceneDocument (autoría)
   → History / Command
   → SimulationEngine
-  → Rapier 2D + fluido analítico / SPH Clavet
+  → Rapier 2D + fluido analítico / partículas PBF
   → snapshot interpolado
   → PixiJS
 ```
@@ -77,25 +77,29 @@ Contratos:
 - Undo / redo: `engine.syncWorld(prev, next)` aplica solo el diff (altas, bajas, campos). `applyBodyChange` es el único sitio que decide qué campo reconstruye el cuerpo (`REBUILD_KEYS`) y cuál se aplica en vivo; `commitPatch` lo usa también.
 - `History.begin()` / `commit()` / `abort()`: varias mutaciones = un solo Ctrl+Z.
 - Picking: `engine.bodyAt` usa `pointHit` de Rapier y, si falla (pausa, sensores), `pickBody` sobre la geometría de la escena.
-- Fluido: tanques analíticos (Arquímedes + arrastre Stokes/cuadrático; superficie plana, no se derrama) y volúmenes de partículas SPH Clavet (`PbfFluid`, double-density, no es PBF). Cápsula = estadio; el recorte de superficie es el semiplano alineado con `−g`. Flotación didáctica → `fluidRegions`. Derrame / charco → `fluidVolumes`. No mezclar ambos modelos sobre el mismo cuerpo.
+- Fluido: tanques analíticos (Arquímedes + arrastre Stokes/cuadrático; superficie plana, no se derrama) y volúmenes de partículas PBF (`PbfFluid`, Position Based Fluids de Macklin & Müller, incompresible). Cápsula = estadio; el recorte de superficie es el semiplano alineado con `−g`. Flotación didáctica → `fluidRegions`. Derrame / charco → `fluidVolumes`. No mezclar ambos modelos sobre el mismo cuerpo.
 - Centro de masas: `BodySnapshot.x/y` es el **origen** del cuerpo; `comX/comY` es el centro de masas y `vx/vy` es su velocidad. Registrador (x, y, Ep), trayectorias y vectores de velocidad / gravedad / CM usan `comX/comY`. Los polígonos dibujados se centran en el centroide de área.
-- Arrastre del fluido: `stableDamping` limita `c ≤ m/dt` (nunca invierte ni amplifica v). Por debajo del límite es el explícito sin cambios: las calibraciones de SPH y tanques dependen de ello.
+- Arrastre del fluido: `stableDamping` limita `c ≤ m/dt` (nunca invierte ni amplifica v). Por debajo del límite es el explícito sin cambios: las calibraciones de partículas y tanques dependen de ello.
 - Polígono hidrostático de círculo / cápsula: escalado para conservar el área exacta (umbral de flotación = ρ_fluido).
-- SPH: un solo kernel (`h`, `ρ0`) para todas las partículas; un segundo volumen reutiliza el espaciado vivo.
-- SPH, rendimiento: una lista de pares por subpaso (`CountingSortGrid.collectPairs` → `PairList`) alimenta densidad, relajación y XSPH. El orden de los pares es el de `i` ascendente: la relajación de Clavet es secuencial y otro orden (p. ej. media celda) la desestabiliza. ~3 µs/partícula/paso en navegador.
-- SPH, contorno sólido: densidad y empuje de presión de partículas fantasma tras la superficie (`clavetWallTables`, `forEachNearSurface`), tabulados por distancia. Sin ellos una partícula junto a la pared tiene falta de vecinos y el agua la aprieta contra la pared: filas de partículas apiladas en paredes inclinadas. No escales la contribución en vértices convexos: medido, empeora (vuelve la bomba en la esquina).
-- SPH, límite: `PBF_MAX_PARTICLES = 3000`. Lo que no cabe se descarta y el HUD lo avisa (`particlesTruncated`).
-- SPH → sólidos (`applyBuoyancy`), modelo híbrido:
+- Partículas, solver: PBF. Por subpaso (2 por paso): predicción, colisión, una lista de pares y `PBF_ITERATIONS = 3` iteraciones Jacobi de la restricción de densidad `C_i = ρ_i/ρ0 − 1`, solo `C > 0` (una partícula de superficie con pocos vecinos no tira de nadie). `λ_i = −C_i / (Σ|∇C|² + ε)`, `Δp_i = Σ (λ_i + λ_j + s_corr) ∇W / ρ0`. Velocidad = posiciones / dt, luego XSPH por material. Kernel `W = (1 − r/h)²` (el de Clavet), `ρ0` medido en la red de siembra (`clavetRestDensity`), `ε = PBF_RELAX · Σ|∇C|²` de esa red (`pbfRestGradSq`).
+- PBF, `PBF_RELAX = 1.5`: Jacobi sobrecorrige. Con 0,1 un depósito de 5 m hierve y escupe agua por encima de las paredes; con 1 quedan partículas sueltas en un ciclo de periodo 2 (±0,4 m/s sin moverse). A 1,5 la compresión es ≈ 1 % a 5 m de hondo.
+- Partículas: un solo kernel (`h`, `ρ0`) para todas; un segundo volumen reutiliza el espaciado vivo. Un volumen dibujado sobre agua viva solo rellena el hueco: las semillas encima de una partícula viva se descartan (el agua incompresible haría estallar la densidad doble).
+- Partículas, rendimiento: una lista de pares por subpaso (`CountingSortGrid.collectPairs` → `PairList`) alimenta todas las iteraciones y XSPH; cada iteración guarda `W` y `∇W` por par para la pasada de `Δp`. Jacobi no depende del orden de los pares. ~2,8 µs/partícula/paso (escena del depósito en V a 3000 partículas: 8,4 ms de media, p95 9,4 ms en navegador; Clavet: 8,6 ms).
+- Partículas, contorno sólido: densidad de partículas fantasma tras la superficie (`clavetWallTables`: `rho` y `push`, tabulados por distancia) dentro de la restricción de cada partícula; su gradiente solo entra en el `λ` propio (las fantasmas no se mueven). `forEachNearSurface` se muestrea una vez por subpaso y en las iteraciones la distancia sigue a la partícula, `d = d0 + (p − p0)·n`. Para cajas usa el punto más cercano real (`nearBoxSurface`): con `pushOutOfShape` y alcance `h` el agua junto al costado de una caja plana recibía la normal del fondo. Sin fantasmas una partícula junto a la pared tiene falta de vecinos y el agua la aprieta contra la pared: filas apiladas en paredes inclinadas. No escales la contribución en vértices convexos: medido con Clavet, empeora.
+- Partículas, límite: `PBF_MAX_PARTICLES = 3000`. Lo que no cabe se descarta y el HUD lo avisa (`particlesTruncated`).
+- Partículas → sólidos (`applyBuoyancy`), modelo híbrido:
   - **Agua en ambos flancos** (flotador o sumergido; con histéresis `FLOAT_HOLD_STEPS` para el oleaje): Arquímedes recortado en la superficie estimada en los flancos (`applyArchimedes`), aplicado en el centro de carena. Sin retraso en la fuerza; cabeceo y balanceo amortiguados por radiación de olas (`SPH_HEAVE_DAMPING`, `SPH_ROLL_DAMPING`), que solo ven velocidades y no mueven el calado.
-  - **El resto** (recipientes, paredes con agua a un lado, cuerpos secos junto al agua): presión hidrostática integrada solo sobre el contorno **mojado**. El vaso soporta el peso de su agua; un cuerpo seco tras una pared no recibe nada. Las columnas de cada tramo solo cuentan partículas del lado exterior de su cara.
-- SPH ↔ colisión: una corrección de posición contra un sólido nunca se convierte en velocidad (eso lanzaba chorros desde las esquinas). Una partícula en contacto toma como mínimo la velocidad normal del punto del sólido (`ContactVelocity`), así un cuerpo en movimiento sigue empujando el agua.
+  - **El resto** (recipientes, paredes con agua a un lado, cuerpos secos junto al agua): presión hidrostática integrada solo sobre el contorno **mojado**. El vaso soporta el peso de su agua; un cuerpo seco tras una pared no recibe nada. Las columnas de cada tramo solo cuentan partículas del lado exterior de su cara. La columna de un flanco puede empezar en cualquier altura del cuerpo (un tablón inclinado con un extremo contra la pared tiene el agua del otro flanco encima de lo que lo sostiene). Si el empuje supera 1,2·mg se despierta el cuerpo: uno dormido bajo el agua no subía nunca.
+  - **Reacción del contacto**: lo que un sólido que avanza da al agua en el suelo de velocidad de contacto (`m_p · min(u_n − v_n, u_n)`) vuelve al sólido como fuerza (`applyContactReaction`), con tope para no invertir su velocidad. Sin ella el agua incompresible empujada por un flotador era energía gratis: un tablón ancho cabeceaba sin parar y lanzaba el agua a 8 m/s.
+- Partículas ↔ colisión: una corrección de posición contra un sólido nunca se convierte en velocidad (eso lanzaba chorros desde las esquinas). Una partícula en contacto toma como mínimo la velocidad normal del punto del sólido (`ContactVelocity`), así un cuerpo en movimiento sigue empujando el agua.
 
 ### Simplificaciones deliberadas (documentadas, no son bugs)
 
-- SPH: velocidad de partícula limitada a 8 m/s (`V_MAX`); el agua cae más despacio que un sólido desde más de ~3 m.
-- SPH: el acoplamiento partícula → cuerpo usa `COUPLING = 0.1` con tope `MAX_BODY_IMPULSE`; no conserva momento. La sustentación viene de Arquímedes / presión hidrostática, no de la presión SPH.
-- SPH: el agua es compresible (ρ/ρ0 ≈ 1,45 a reposo en un vaso, hasta ~3,5 en el fondo de un depósito de 4–5 m). Subir `SPH_K` hierve incluso manteniendo dt²·k con más subpasos (medido k = 20…200). En depósitos hondos con un sólido sumergido puede quedar un remolino persistente junto a una esquina, según dónde caiga el sólido. Arreglo real: solver incompresible (PBF).
-- Flotadores (tanque analítico y SPH): el amortiguamiento por radiación de olas es un modelo, no ondas simuladas.
+- Partículas: velocidad limitada a 8 m/s (`V_MAX`); el agua cae más despacio que un sólido desde más de ~3 m.
+- Partículas: el acoplamiento de salpicadura partícula → cuerpo usa `COUPLING = 0.1` con tope `MAX_BODY_IMPULSE`; no conserva momento. La sustentación viene de Arquímedes / presión hidrostática, no de `λ`; la reacción del contacto solo devuelve el momento que el sólido da al agua al avanzar.
+- PBF: 3 iteraciones Jacobi con `ε` alto no convergen del todo: ρ/ρ0 ≈ 1,01 a 5 m de hondo (Clavet: ~2,4 de media, ~3,5 en el fondo). Más hondo comprime más; cada iteración extra encarece el paso.
+- PBF: agua encerrada en una cavidad sellada por un cuerpo encajado (tablón apoyado en el bloque y la pared) puede quedar circulando: la restricción no se puede satisfacer y las esquinas fantasma empujan de lado. Visto una vez en un barrido con `ε = 2`, no con 1,5.
+- Flotadores (tanque analítico y partículas): el amortiguamiento por radiación de olas es un modelo, no ondas simuladas.
 - El empuje se multiplica por el `gravityScale` del cuerpo (en rigor depende de la gravedad del fluido). Elección pedagógica: la fracción sumergida en equilibrio no depende de `gravityScale`.
 - Combinación de contacto: rozamiento `Min`, restitución `Max` (el hielo desliza, la goma rebota), no la media geométrica habitual.
 - La amortiguación lineal / angular del cuerpo es «aire», no propiedad del material: los cuerpos dibujados nacen con 0 y cambiar de material no la toca. Los experimentos con fluido la fijan a mano.
@@ -118,9 +122,9 @@ Contratos:
 
 ## Qué no reabrir como si estuviera roto
 
-Ya está corregido (no reviertas): arrastre en pausa con `orig` de la pose viva; `bodyToDesc` unificado; cola de `reload`; guardias `freed`; AABBs de cápsula/convex/polyline; picking por geometría; `appliedForces` por paso; `Num` con confirmación; `syncWorld` incremental en undo/redo; transacciones de historial; `LabInput` separado de `LabRuntime`; edición de vértices de tanques; capas `trajectories` / `colliders` reales; asas de rotar / escalar; cinemático por velocidad (`kinematicVelocityBased`); contactos leídos por punto del manifold (no por índice del solver); `clipPolygon` acepta cualquier sentido de giro.
+Ya está corregido (no reviertas): arrastre en pausa con `orig` de la pose viva; `bodyToDesc` unificado; cola de `reload`; guardias `freed`; AABBs de cápsula/convex/polyline; picking por geometría; `appliedForces` por paso; `Num` con confirmación; `syncWorld` incremental en undo/redo; transacciones de historial; `LabInput` separado de `LabRuntime`; edición de vértices de tanques; capas `trajectories` / `colliders` reales; asas de rotar / escalar; cinemático por velocidad (`kinematicVelocityBased`); contactos leídos por punto del manifold (no por índice del solver); `clipPolygon` acepta cualquier sentido de giro; solver PBF incompresible (sustituye a Clavet); reacción del contacto en sólidos que avanzan; semillas que no pisan agua viva; distancia real a cajas en el contorno fantasma.
 
-Sigue abierto: tests para lo anterior (aplazados a propósito); orden de las uniones restauradas por undo (se añaden al final, no en su índice); SPH incompresible (compresión y remolino en depósitos hondos); el servidor de desarrollo se cuelga a veces al recargar en caliente con la app abierta.
+Sigue abierto: tests para lo anterior (aplazados a propósito); orden de las uniones restauradas por undo (se añaden al final, no en su índice); cavidades selladas con agua bajo un cuerpo encajado (ver PBF arriba); el servidor de desarrollo se cuelga a veces al recargar en caliente con la app abierta.
 
 ## Pruebas
 

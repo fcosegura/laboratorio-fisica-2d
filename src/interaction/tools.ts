@@ -29,7 +29,7 @@ export const TOOL_META: {
   {
     id: 'spill',
     label: 'Fluido libre',
-    hint: 'E · SPH Clavet, se derrama',
+    hint: 'E · partículas PBF, se derrama',
     group: 'create',
   },
   { id: 'force', label: 'Fuerza', hint: 'F · arrastra; Mayús sostiene', group: 'phys' },

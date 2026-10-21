@@ -98,6 +98,11 @@ export function pushOutOfShape(
       nlx = (flx >= 0 ? 1 : -1) * ehx
     } else if (fromTopBottom) {
       nly = (fly >= 0 ? 1 : -1) * ehy
+    } else if (Math.abs(lx) > hx || Math.abs(ly) > hy) {
+      // In the contact shell, outside the box itself (left exactly on the shell last
+      // substep, rounding put it a hair inside): leave through the face it is outside of.
+      if (Math.abs(lx) - hx >= Math.abs(ly) - hy) nlx = (lx >= 0 ? 1 : -1) * ehx
+      else nly = (ly >= 0 ? 1 : -1) * ehy
     } else if (hx <= hy) {
       const sx = Math.abs(flx) > 1e-8 ? Math.sign(flx) : lx >= 0 ? 1 : -1
       nlx = sx * ehx
@@ -279,8 +284,16 @@ export type CachedSolid = {
   comY: number
 }
 
-/** Per-particle velocity of the solid surface it touched this substep (`hit` = 1). */
-export type ContactVelocity = { ux: Float64Array; uy: Float64Array; hit: Uint8Array }
+/**
+ * Per-particle velocity of the solid surface it touched this substep (`hit` = 1), and the
+ * index of that solid in the cached list.
+ */
+export type ContactVelocity = {
+  ux: Float64Array
+  uy: Float64Array
+  hit: Uint8Array
+  solid: Int32Array
+}
 
 /** Snapshot non-sensor colliders with AABBs expanded by `radius`. */
 export function cacheSolids(world: PhysicsWorld, radius: number): CachedSolid[] {
@@ -336,7 +349,10 @@ export function forEachNearSurface(
   for (const solid of solids) {
     for (const col of solid.colliders) {
       if (x < col.minX || x > col.maxX || y < col.minY || y > col.maxY) continue
-      const hit = pushOutOfShape(x, y, reach, col.shape, col.ox, col.oy, col.ang, fromX, fromY)
+      const hit =
+        col.shape.kind === 'box'
+          ? nearBoxSurface(x, y, reach, col.shape.hx, col.shape.hy, col, fromX, fromY)
+          : pushOutOfShape(x, y, reach, col.shape, col.ox, col.oy, col.ang, fromX, fromY)
       if (!hit) continue
       // hit = contact + n·reach, so n is exact even when (x, y) is inside the solid.
       const nx = (hit.x - hit.cx) / reach
@@ -344,6 +360,45 @@ export function forEachNearSurface(
       const d = (x - hit.cx) * nx + (y - hit.cy) * ny
       add(d, nx, ny)
     }
+  }
+}
+
+/**
+ * Closest surface point of a box within `reach`, in the `pushOutOfShape` hit format. Outside
+ * the box it is the true closest point (a rounded corner); `pushOutOfShape` with a reach of h
+ * would treat the whole h-shell as a penetration and pick the face by aspect ratio, giving
+ * water beside a flat box a floor normal. Inside, the penetration logic applies.
+ */
+function nearBoxSurface(
+  x: number,
+  y: number,
+  reach: number,
+  hx: number,
+  hy: number,
+  col: CachedCollider,
+  fromX: number,
+  fromY: number,
+): PushOutHit | null {
+  const c = Math.cos(col.ang)
+  const s = Math.sin(col.ang)
+  const lx = (x - col.ox) * c + (y - col.oy) * s
+  const ly = -(x - col.ox) * s + (y - col.oy) * c
+  if (Math.abs(lx) <= hx && Math.abs(ly) <= hy) {
+    return pushOutOfShape(x, y, reach, col.shape, col.ox, col.oy, col.ang, fromX, fromY)
+  }
+  const qx = Math.max(-hx, Math.min(hx, lx))
+  const qy = Math.max(-hy, Math.min(hy, ly))
+  const dx = lx - qx
+  const dy = ly - qy
+  const d = Math.hypot(dx, dy)
+  if (d >= reach || d < 1e-12) return null
+  const nlx = qx + (dx / d) * reach
+  const nly = qy + (dy / d) * reach
+  return {
+    x: col.ox + nlx * c - nly * s,
+    y: col.oy + nlx * s + nly * c,
+    cx: col.ox + qx * c - qy * s,
+    cy: col.oy + qx * s + qy * c,
   }
 }
 
@@ -362,7 +417,8 @@ export function collideSolidCached(
   let x = px[i]!
   let y = py[i]!
 
-  for (const solid of solids) {
+  for (let k = 0; k < solids.length; k++) {
+    const solid = solids[k]!
     for (const col of solid.colliders) {
       if (x < col.minX || x > col.maxX || y < col.minY || y > col.maxY) continue
       const hit = pushOutOfShape(x, y, radius, col.shape, col.ox, col.oy, col.ang, fromX, fromY)
@@ -376,6 +432,7 @@ export function collideSolidCached(
         contact.ux[i] = solid.vx - solid.omega * (hit.cy - solid.comY)
         contact.uy[i] = solid.vy + solid.omega * (hit.cx - solid.comX)
         contact.hit[i] = 1
+        contact.solid[i] = k
       }
     }
   }

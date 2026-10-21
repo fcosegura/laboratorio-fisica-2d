@@ -283,7 +283,7 @@ export class SimulationEngine {
     }
     if (this.grab) this.applyGrab(this.world, this.grab)
     const t0 = performance.now()
-    // Analytic tanks, then SPH Clavet particles (distinct models).
+    // Analytic tanks, then PBF particles (distinct models).
     this.fluids.step(this.world, this.doc.fluidRegions, this.doc.bodies, this.curr)
     this.particles.step(this.world, PHYSICS_DT, this.doc.bodies)
     const t1 = performance.now()

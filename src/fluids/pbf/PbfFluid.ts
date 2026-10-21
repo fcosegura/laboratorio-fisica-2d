@@ -17,12 +17,19 @@ import {
   waveRadiationForce,
 } from '../analytic/AnalyticFluid.ts'
 import { shapeToWorldPolygons } from '../bodyPolygon.ts'
-import { collideSolidCached, cacheSolids, forEachNearSurface, pushOutOfShape } from './collide.ts'
+import {
+  collideSolidCached,
+  cacheSolids,
+  forEachNearSurface,
+  pushOutOfShape,
+  type CachedSolid,
+} from './collide.ts'
 import { estimateFreeSurfaceD } from './freeSurface.ts'
 import { CountingSortGrid, PairList, buildCountingSort } from './hash.ts'
 import {
   clavetRestDensity,
   clavetWallTables,
+  pbfRestGradSq,
   wallLookup,
   xsphEpsilon,
   type WallTables,
@@ -44,21 +51,27 @@ export type FluidParticle = {
 export const PBF_DEFAULT_SPACING = 0.1
 /**
  * Particle budget. ~3 µs/particle/step in the browser (pair-list solver): 3000 leaves room
- * for drawing inside a 60 Hz frame. Deeper pools than this allows start to churn (the
- * compressible solver squeezes ~4× at depth), so raising it needs an incompressible solver.
+ * for drawing inside a 60 Hz frame.
  */
 export const PBF_MAX_PARTICLES = 3000
 
 const SPH_SUBSTEPS = 2
+/** Jacobi iterations of the density constraint per substep. */
+const PBF_ITERATIONS = 3
+/**
+ * Constraint relaxation ε, as a fraction of the rest-lattice λ denominator (1.5: λ is ~40%
+ * of a Newton step). Jacobi over-corrects: at 0.1 a 5 m pool boils, at 1 single particles
+ * keep a period-2 ringing (±0.4 m/s, no net motion). Compression stays ≈ 1% at 5 m.
+ */
+const PBF_RELAX = 1.5
+/** s_corr = −k (W / W(Δq))⁴, k in units of a density error (scaled like λ). */
+const PBF_CORR_K = 0.002
+const PBF_CORR_DQ = 0.2
+/** Largest position correction per iteration, in spacings (overlapping seeds, impacts). */
+const PBF_MAX_DP = 0.3
 const SPH_H_FACTOR = 2.2
 const SPH_COLLISION_RADIUS = 0.5
 const SPH_DRAW_RADIUS = 0.65
-/**
- * Clavet stiffness (m/s²). Higher k compresses less but boils at this step size even with
- * dt²·k held fixed by more substeps (measured k = 20..200): the water stays compressible.
- */
-const SPH_K = 10
-const SPH_K_NEAR = 5
 const CULL_Y = -40
 /** Splash/impact coupling only — hydrostatic lift comes from Archimedes, not this. */
 const COUPLING = 0.1
@@ -103,14 +116,16 @@ type Seed = {
 }
 
 /**
- * SPH Clavet (2D CPU, double-density), not PBF. Two internal substeps of dt/2.
- * Facade kept under the PBF path from the plan.
+ * Position Based Fluids (Macklin & Müller 2013), 2D CPU. Two substeps of dt/2; per substep
+ * one neighbor pair list and a few Jacobi iterations of the density constraint
+ * C_i = ρ_i / ρ0 − 1 ≥ 0 (λ per particle, Δp with s_corr), solid boundary as ghost density.
+ * Velocity from positions, then XSPH viscosity.
  *
  * Two-way coupling is hybrid on purpose:
  * - Particle→body impulses: splash / impact. Faded to zero when the rigid is slow.
  * - Hydrostatic lift: clip each collider against a local free-surface plane
  *   (same Archimedes as the analytic tank). No exterior shell.
- * SPH pressure is never applied as a force on rigid bodies.
+ * Particle pressure (λ) is never applied as a force on rigid bodies.
  */
 export class PbfFluidSolver {
   readonly particles: FluidParticle[] = []
@@ -127,9 +142,7 @@ export class PbfFluidSolver {
   private density: Float64Array = new Float64Array(0)
   private viscosity: Float64Array = new Float64Array(0)
   private rho: Float64Array = new Float64Array(0)
-  private rhoNear: Float64Array = new Float64Array(0)
-  private press: Float64Array = new Float64Array(0)
-  private pressNear: Float64Array = new Float64Array(0)
+  private lambda: Float64Array = new Float64Array(0)
   private sphDensity: Float64Array = new Float64Array(0)
   private n = 0
   private cap = 0
@@ -138,12 +151,17 @@ export class PbfFluidSolver {
   private spacing = PBF_DEFAULT_SPACING
   private h = PBF_DEFAULT_SPACING * SPH_H_FACTOR
   private rho0 = clavetRestDensity(PBF_DEFAULT_SPACING, PBF_DEFAULT_SPACING * SPH_H_FACTOR)
+  private gradSq0 = pbfRestGradSq(PBF_DEFAULT_SPACING, PBF_DEFAULT_SPACING * SPH_H_FACTOR)
   private wall: WallTables = clavetWallTables(
     PBF_DEFAULT_SPACING,
     PBF_DEFAULT_SPACING * SPH_H_FACTOR,
   )
   private readonly hash = new CountingSortGrid()
   private readonly pairs = new PairList()
+  /** Per pair of the current iteration: W(r) and ∇_i W / ρ0. */
+  private pairW: Float64Array = new Float64Array(0)
+  private pairGx: Float64Array = new Float64Array(0)
+  private pairGy: Float64Array = new Float64Array(0)
   private xsphEps: Float64Array = new Float64Array(0)
   /** Collision radius of a particle. */
   get particleRadius(): number {
@@ -205,13 +223,15 @@ export class PbfFluidSolver {
     // One kernel (h, ρ0) for every particle: a second volume reuses the live spacing.
     // Changing it would shift the rest density of the particles already settled.
     const fixedSpacing = this.n > 0 ? this.spacing : null
-    const { seeds, spacing, truncated } = seedVolume(vol, this.n, world, fixedSpacing)
+    const live = { x: this.x, y: this.y, n: this.n }
+    const { seeds, spacing, truncated } = seedVolume(vol, live, world, fixedSpacing)
     this.truncatedSeeds += truncated
     if (!seeds.length) return 0
     this.spacing = spacing
     this.radius = spacing * SPH_COLLISION_RADIUS
     this.h = spacing * SPH_H_FACTOR
     this.rho0 = clavetRestDensity(spacing, this.h)
+    this.gradSq0 = pbfRestGradSq(spacing, this.h)
     this.wall = clavetWallTables(spacing, this.h)
     this.ensureCap(this.n + seeds.length)
     for (const s of seeds) {
@@ -264,21 +284,16 @@ export class PbfFluidSolver {
     const h = this.h
     const h2 = h * h
     const rCol = this.radius
-    const rho0 = this.rho0
-    const k = SPH_K
-    const kNear = SPH_K_NEAR
+    const invRho0 = 1 / this.rho0
+    const relax = PBF_RELAX * this.gradSq0
+    const corrK = PBF_CORR_K / this.gradSq0
+    const wDq = (1 - PBF_CORR_DQ) ** 2
+    const maxDp = this.spacing * PBF_MAX_DP
     const dtSub = dt / SPH_SUBSTEPS
-    const dtSub2 = dtSub * dtSub
     const solids = cacheSolids(world, rCol)
-    // Same solids with AABBs grown by h: the reach of the boundary density / pressure.
+    // Same solids with AABBs grown by h: the reach of the boundary density.
     const solidsH = cacheSolids(world, h)
     const wall = this.wall
-    const wRho = new Float64Array(n)
-    const wRhoN = new Float64Array(n)
-    const wPx = new Float64Array(n)
-    const wPy = new Float64Array(n)
-    const wPnx = new Float64Array(n)
-    const wPny = new Float64Array(n)
     const bodyImpulse = new Map<BodyId, { x: number; y: number; jx: number; jy: number }>()
     const solidDx = new Float64Array(n)
     const solidDy = new Float64Array(n)
@@ -286,10 +301,44 @@ export class PbfFluidSolver {
       ux: new Float64Array(n),
       uy: new Float64Array(n),
       hit: new Uint8Array(n),
+      solid: new Int32Array(n),
     }
+    // Momentum a moving solid hands the water at the contact floor, per cached solid
+    // (jx, jy, angular about the COM): returned to the solid as the water's reaction.
+    const react = new Float64Array(solids.length * 3)
+    const massP = this.spacing * this.spacing * 0.8660254037844386
+    // Solid surfaces near each particle (CSR), sampled once per substep at p0; inside the
+    // iterations their distance follows the particle along the normal: d = d0 + (p − p0)·n.
+    const bStart = new Int32Array(n + 1)
+    const bD: number[] = []
+    const bNx: number[] = []
+    const bNy: number[] = []
+    const p0x = new Float64Array(n)
+    const p0y = new Float64Array(n)
+    const gbx = new Float64Array(n)
+    const gby = new Float64Array(n)
+    const gsx = new Float64Array(n)
+    const gsy = new Float64Array(n)
+    const gsq = new Float64Array(n)
+    const dpx = new Float64Array(n)
+    const dpy = new Float64Array(n)
     const dvx = new Float64Array(n)
     const dvy = new Float64Array(n)
     const wsum = new Float64Array(n)
+    const px = this.px
+    const py = this.py
+    const rho = this.rho
+    const lam = this.lambda
+
+    const collideAll = () => {
+      for (let i = 0; i < n; i++) {
+        const bx = px[i]!
+        const by = py[i]!
+        collideSolidCached(px, py, i, rCol, solids, bodyImpulse, this.x[i]!, this.y[i]!, contact)
+        solidDx[i]! += px[i]! - bx
+        solidDy[i]! += py[i]! - by
+      }
+    }
 
     for (let sub = 0; sub < SPH_SUBSTEPS; sub++) {
       solidDx.fill(0)
@@ -299,143 +348,133 @@ export class PbfFluidSolver {
       for (let i = 0; i < n; i++) {
         this.vx[i]! += g.x * dtSub
         this.vy[i]! += g.y * dtSub
-        this.px[i] = this.x[i]! + this.vx[i]! * dtSub
-        this.py[i] = this.y[i]! + this.vy[i]! * dtSub
+        px[i] = this.x[i]! + this.vx[i]! * dtSub
+        py[i] = this.y[i]! + this.vy[i]! * dtSub
       }
+      collideAll()
 
-      for (let i = 0; i < n; i++) {
-        const bx = this.px[i]!
-        const by = this.py[i]!
-        collideSolidCached(
-          this.px,
-          this.py,
-          i,
-          rCol,
-          solids,
-          bodyImpulse,
-          this.x[i]!,
-          this.y[i]!,
-          contact,
-        )
-        solidDx[i]! += this.px[i]! - bx
-        solidDy[i]! += this.py[i]! - by
-      }
-
-      buildCountingSort(this.px, this.py, n, h, this.hash)
-
-      const rho = this.rho
-      const rhoNear = this.rhoNear
-      const press = this.press
-      const pressNear = this.pressNear
-      rho.fill(1, 0, n)
-      rhoNear.fill(1, 0, n)
-      // Solid boundary: ghost-lattice density and the normal weights of its pressure push.
-      wRho.fill(0)
-      wRhoN.fill(0)
-      wPx.fill(0)
-      wPy.fill(0)
-      wPnx.fill(0)
-      wPny.fill(0)
-      if (solidsH.length) {
-        for (let i = 0; i < n; i++) {
-          forEachNearSurface(
-            this.px[i]!,
-            this.py[i]!,
-            h,
-            solidsH,
-            this.x[i]!,
-            this.y[i]!,
-            (d, nx, ny) => {
-              const r1 = wallLookup(wall, wall.push, d)
-              const r2 = wallLookup(wall, wall.pushNear, d)
-              wRho[i]! += wallLookup(wall, wall.rho, d)
-              wRhoN[i]! += wallLookup(wall, wall.rhoNear, d)
-              wPx[i]! += r1 * nx
-              wPy[i]! += r1 * ny
-              wPnx[i]! += r2 * nx
-              wPny[i]! += r2 * ny
-            },
-          )
-          rho[i]! += wRho[i]!
-          rhoNear[i]! += wRhoN[i]!
-        }
-      }
-      // One grid walk per substep; density, relaxation and XSPH iterate this list in the
-      // order the old per-pass grid queries used (the relaxation is order-dependent).
+      buildCountingSort(px, py, n, h, this.hash)
+      // One grid walk per substep: the iterations and XSPH reuse this pair list.
       const pairs = this.pairs
-      this.hash.collectPairs(this.px, this.py, h2, pairs)
+      this.hash.collectPairs(px, py, h2, pairs)
       const pI = pairs.i
       const pJ = pairs.j
       const nP = pairs.n
-      const px = this.px
-      const py = this.py
-      for (let q = 0; q < nP; q++) {
-        const i = pI[q]!
-        const j = pJ[q]!
-        const dx = px[i]! - px[j]!
-        const dy = py[i]! - py[j]!
-        const w = 1 - Math.sqrt(dx * dx + dy * dy) / h
-        const w2 = w * w
-        rho[i]! += w2
-        rho[j]! += w2
-        const w3 = w2 * w
-        rhoNear[i]! += w3
-        rhoNear[j]! += w3
+      if (this.pairW.length < nP) {
+        const cap = Math.max(nP, this.pairW.length * 2)
+        this.pairW = new Float64Array(cap)
+        this.pairGx = new Float64Array(cap)
+        this.pairGy = new Float64Array(cap)
       }
+      const pW = this.pairW
+      const pGx = this.pairGx
+      const pGy = this.pairGy
 
+      bD.length = 0
+      bNx.length = 0
+      bNy.length = 0
       for (let i = 0; i < n; i++) {
-        press[i] = k * (rho[i]! - rho0)
-        pressNear[i] = kNear * rhoNear[i]!
-        this.sphDensity[i] = rho[i]! / rho0
+        bStart[i] = bD.length
+        p0x[i] = px[i]!
+        p0y[i] = py[i]!
+        if (!solidsH.length) continue
+        forEachNearSurface(px[i]!, py[i]!, h, solidsH, this.x[i]!, this.y[i]!, (d, nx, ny) => {
+          bD.push(d)
+          bNx.push(nx)
+          bNy.push(ny)
+        })
       }
+      bStart[n] = bD.length
 
-      for (let q = 0; q < nP; q++) {
-        const i = pI[q]!
-        const j = pJ[q]!
-        const dx = px[i]! - px[j]!
-        const dy = py[i]! - py[j]!
-        const d2 = dx * dx + dy * dy
-        if (d2 >= h2 || d2 < 1e-14) continue
-        const r = Math.sqrt(d2)
-        const w = 1 - r / h
-        const mag =
-          dtSub2 * ((press[i]! + press[j]!) * 0.5 + (pressNear[i]! + pressNear[j]!) * 0.5 * w) * w
-        const invR = 1 / r
-        const mx = mag * 0.5 * dx * invR
-        const my = mag * 0.5 * dy * invR
-        px[i]! += mx
-        py[i]! += my
-        px[j]! -= mx
-        py[j]! -= my
-      }
-
-      // Ghosts carry the particle's own pressure (mirror) and never move: the particle takes
-      // the pair's half share, like any neighbor.
-      if (solidsH.length) {
-        for (let i = 0; i < n; i++) {
-          if (wRho[i] === 0) continue
-          const f = dtSub2 * 0.5
-          px[i]! += f * (press[i]! * wPx[i]! + pressNear[i]! * wPnx[i]!)
-          py[i]! += f * (press[i]! * wPy[i]! + pressNear[i]! * wPny[i]!)
+      for (let it = 0; it < PBF_ITERATIONS; it++) {
+        // Density, constraint gradients and λ_i = −C_i / (Σ_k |∇_k C_i|² + ε). Only C_i > 0
+        // is enforced: a sparse surface particle is not pulled back (no clumping).
+        rho.fill(1, 0, n)
+        gsx.fill(0)
+        gsy.fill(0)
+        gsq.fill(0)
+        for (let q = 0; q < nP; q++) {
+          const i = pI[q]!
+          const j = pJ[q]!
+          const dx = px[i]! - px[j]!
+          const dy = py[i]! - py[j]!
+          const d2 = dx * dx + dy * dy
+          if (d2 >= h2 || d2 < 1e-14) {
+            pW[q] = 0
+            continue
+          }
+          const r = Math.sqrt(d2)
+          const w = 1 - r / h
+          const W = w * w
+          // ∇_i W / ρ0 = −(2w / h) r̂ / ρ0
+          const gm = (-2 * w * invRho0) / (h * r)
+          const gx = gm * dx
+          const gy = gm * dy
+          pW[q] = W
+          pGx[q] = gx
+          pGy[q] = gy
+          rho[i]! += W
+          rho[j]! += W
+          gsx[i]! += gx
+          gsy[i]! += gy
+          gsx[j]! -= gx
+          gsy[j]! -= gy
+          const g2 = gx * gx + gy * gy
+          gsq[i]! += g2
+          gsq[j]! += g2
         }
-      }
+        for (let i = 0; i < n; i++) {
+          let bgx = 0
+          let bgy = 0
+          for (let c = bStart[i]!; c < bStart[i + 1]!; c++) {
+            const nx = bNx[c]!
+            const ny = bNy[c]!
+            const d = bD[c]! + (px[i]! - p0x[i]!) * nx + (py[i]! - p0y[i]!) * ny
+            if (d >= h) continue
+            rho[i]! += wallLookup(wall, wall.rho, d)
+            // Ghosts never move: their gradient only enters the particle's own constraint.
+            const gb = (-2 / h) * invRho0 * wallLookup(wall, wall.push, d)
+            bgx += gb * nx
+            bgy += gb * ny
+          }
+          gbx[i] = bgx
+          gby[i] = bgy
+          const sx = gsx[i]! + bgx
+          const sy = gsy[i]! + bgy
+          const c = rho[i]! * invRho0 - 1
+          lam[i] = c > 0 ? -c / (sx * sx + sy * sy + gsq[i]! + relax) : 0
+          this.sphDensity[i] = rho[i]! * invRho0
+        }
 
-      for (let i = 0; i < n; i++) {
-        const bx = this.px[i]!
-        const by = this.py[i]!
-        collideSolidCached(
-          this.px,
-          this.py,
-          i,
-          rCol,
-          solids,
-          bodyImpulse,
-          this.x[i]!,
-          this.y[i]!,
-          contact,
-        )
-        solidDx[i]! += this.px[i]! - bx
-        solidDy[i]! += this.py[i]! - by
+        // Δp_i = Σ_j (λ_i + λ_j + s_corr) ∇_i W_ij / ρ0 + λ_i ∇_i ρ_ghost / ρ0 (Jacobi).
+        dpx.fill(0)
+        dpy.fill(0)
+        for (let q = 0; q < nP; q++) {
+          const W = pW[q]!
+          if (W === 0) continue
+          const i = pI[q]!
+          const j = pJ[q]!
+          const sc = W / wDq
+          const f = lam[i]! + lam[j]! - corrK * sc * sc * sc * sc
+          const fx = f * pGx[q]!
+          const fy = f * pGy[q]!
+          dpx[i]! += fx
+          dpy[i]! += fy
+          dpx[j]! -= fx
+          dpy[j]! -= fy
+        }
+        for (let i = 0; i < n; i++) {
+          let ddx = dpx[i]! + lam[i]! * gbx[i]!
+          let ddy = dpy[i]! + lam[i]! * gby[i]!
+          const dl = Math.hypot(ddx, ddy)
+          if (dl > maxDp) {
+            ddx *= maxDp / dl
+            ddy *= maxDp / dl
+          }
+          px[i]! += ddx
+          py[i]! += ddy
+        }
+        collideAll()
       }
 
       for (let i = 0; i < n; i++) {
@@ -445,8 +484,8 @@ export class PbfFluidSolver {
         const sx = solidDx[i]!
         const sy = solidDy[i]!
         const sc = Math.hypot(sx, sy)
-        this.vx[i] = (this.px[i]! - sx - this.x[i]!) / dtSub
-        this.vy[i] = (this.py[i]! - sy - this.y[i]!) / dtSub
+        this.vx[i] = (px[i]! - sx - this.x[i]!) / dtSub
+        this.vy[i] = (py[i]! - sy - this.y[i]!) / dtSub
         if (sc > 1e-8) {
           const nx = sx / sc
           const ny = sy / sc
@@ -457,14 +496,28 @@ export class PbfFluidSolver {
           if (vn < un) {
             this.vx[i]! += (un - vn) * nx
             this.vy[i]! += (un - vn) * ny
+            if (un > 0) {
+              // The solid advancing into the water pays for the speed it gives it (at most
+              // its own surface speed; the rest is the particle's impact, see splash).
+              // Incompressible water pushed aside would otherwise be free energy that
+              // pumps a float's heave and roll.
+              const k = contact.solid[i]! * 3
+              const s = solids[contact.solid[i]!]!
+              const j = -massP * this.density[i]! * Math.min(un - vn, un)
+              const jx = j * nx
+              const jy = j * ny
+              react[k]! += jx
+              react[k + 1]! += jy
+              react[k + 2]! += (px[i]! - s.comX) * jy - (py[i]! - s.comY) * jx
+            }
           }
           const vt = this.vx[i]! * -ny + this.vy[i]! * nx
           const vtf = vt * 0.92
           this.vx[i] = this.vx[i]! - -ny * vt + -ny * vtf
           this.vy[i] = this.vy[i]! - nx * vt + nx * vtf
         }
-        this.x[i] = this.px[i]!
-        this.y[i] = this.py[i]!
+        this.x[i] = px[i]!
+        this.y[i] = py[i]!
       }
 
       // Implicit XSPH: v_i ← (v_i + Σ ε w v_j) / (1 + Σ ε w), applied after
@@ -515,10 +568,41 @@ export class PbfFluidSolver {
       }
     }
 
+    this.applyContactReaction(world, solids, react, dt)
     const buoyant = this.applyBuoyancy(world, bodies)
     this.applySplashImpulses(world, bodyImpulse, buoyant)
     this.cullFallen()
     this.syncSnapshot()
+  }
+
+  /**
+   * Reaction of the water pushed by moving solids, as a force over the step. Capped so it
+   * never reverses the body's own velocity (like `stableDamping`): it only takes energy out.
+   */
+  private applyContactReaction(
+    world: PhysicsWorld,
+    solids: readonly CachedSolid[],
+    react: Float64Array,
+    dt: number,
+  ): void {
+    for (let k = 0; k < solids.length; k++) {
+      let jx = react[k * 3]!
+      let jy = react[k * 3 + 1]!
+      let l = react[k * 3 + 2]!
+      if (jx === 0 && jy === 0 && l === 0) continue
+      const body = world.getBody(solids[k]!.id)
+      if (!body || body.type !== 'dynamic') continue
+      const jMax = body.mass * Math.hypot(body.vx, body.vy)
+      const jMag = Math.hypot(jx, jy)
+      if (jMag > jMax) {
+        jx *= jMax / jMag
+        jy *= jMax / jMag
+      }
+      const lMax = body.inertia * Math.abs(body.omega)
+      if (Math.abs(l) > lMax) l = Math.sign(l) * lMax
+      world.applyForce(body.id, jx / dt, jy / dt, { x: body.comX, y: body.comY }, false)
+      world.applyTorque(body.id, l / dt, false)
+    }
   }
 
   /**
@@ -678,6 +762,8 @@ export class PbfFluidSolver {
       // climbed from below the body's base. Not the body's own faces: under a body there is
       // no column (and particles squeezed into the floor would read 0), and a column over
       // the roof is only the riding film.
+      // The column may start anywhere along the body's height (a tilted body whose low end
+      // is against a wall has its flank water start on whatever it rests on).
       const flankHead = (t: number): number | null => {
         let level = sMin - wetR
         let found = false
@@ -685,7 +771,8 @@ export class PbfFluidSolver {
           if (Math.abs(bandT[k]! - t) > colHalf) continue
           const sk = bandS[k]!
           if (sk < sMin - wetR) continue
-          if (sk - level > gap) break
+          if (!found && sk > sMax + wetR) break
+          if (found && sk - level > gap) break
           if (sk > level) level = sk
           found = true
         }
@@ -846,6 +933,9 @@ export class PbfFluidSolver {
       // one-sided walls) are not floats to be settled.
       world.applyForce(body.id, fxP + drag.x, fyP + drag.y, { x: body.comX, y: body.comY }, false)
       world.applyTorque(body.id, tauP + torqueDamp, false)
+      // A body that fell asleep under water (pressed against a wall, one flank dry) must
+      // rise once its lift clearly beats its weight; walls and cups (lift ≪ mg) stay asleep.
+      if (fxP * nx + fyP * ny > 1.2 * body.mass * gEff) world.wake(body.id)
       seen.add(body.id)
       buoyant.add(body.id)
       this.buoyancyDebug.push({
@@ -1046,10 +1136,6 @@ export class PbfFluidSolver {
     const nvy = new Float64Array(next)
     const nd = new Float64Array(next)
     const nmu = new Float64Array(next)
-    const nrho = new Float64Array(next)
-    const nrhoN = new Float64Array(next)
-    const npress = new Float64Array(next)
-    const npressN = new Float64Array(next)
     const nsph = new Float64Array(next)
     this.xsphEps = new Float64Array(next)
     nx.set(this.x.subarray(0, this.n))
@@ -1060,10 +1146,6 @@ export class PbfFluidSolver {
     nvy.set(this.vy.subarray(0, this.n))
     nd.set(this.density.subarray(0, this.n))
     nmu.set(this.viscosity.subarray(0, this.n))
-    nrho.set(this.rho.subarray(0, this.n))
-    nrhoN.set(this.rhoNear.subarray(0, this.n))
-    npress.set(this.press.subarray(0, this.n))
-    npressN.set(this.pressNear.subarray(0, this.n))
     nsph.set(this.sphDensity.subarray(0, this.n))
     this.x = nx
     this.y = ny
@@ -1073,10 +1155,8 @@ export class PbfFluidSolver {
     this.vy = nvy
     this.density = nd
     this.viscosity = nmu
-    this.rho = nrho
-    this.rhoNear = nrhoN
-    this.press = npress
-    this.pressNear = npressN
+    this.rho = new Float64Array(next)
+    this.lambda = new Float64Array(next)
     this.sphDensity = nsph
     this.volumeId.length = next
     this.color.length = next
@@ -1126,13 +1206,16 @@ export class PbfFluidSolver {
  * Returns the spacing actually used: coarsening to fit PBF_MAX_PARTICLES must also drive
  * h and ρ0, or the sparser seed reads as under-dense and collapses. With `fixedSpacing`
  * (particles already live) there is no coarsening; the seed is truncated instead.
+ * A volume drawn over live water only fills the empty part: seeds on top of a live
+ * particle are skipped (the incompressible solver would blast the doubled density apart).
  */
 function seedVolume(
   vol: SceneFluidVolume,
-  already: number,
+  live: { x: Float64Array; y: Float64Array; n: number },
   world: PhysicsWorld | null | undefined,
   fixedSpacing: number | null,
 ): { seeds: Seed[]; spacing: number; truncated: number } {
+  const already = live.n
   const mat = getFluid(vol.materialId)
   let spacing = fixedSpacing ?? (vol.spacing > 0 ? vol.spacing : PBF_DEFAULT_SPACING)
   let filled = fillPolygon(vol.polygon, spacing)
@@ -1144,6 +1227,7 @@ function seedVolume(
   const margin = spacing * 0.55
   const amp = spacing * 0.12
   let rng = hashVolumeId(vol.id)
+  const liveGrid = already > 0 ? new LiveGrid(live, spacing * 0.6) : null
   const out: Seed[] = []
   let i = 0
   for (; i < filled.length && out.length < room; i++) {
@@ -1155,6 +1239,7 @@ function seedVolume(
     const x = p.x + jx
     const y = p.y + jy
     if (world && pointOverlapsSolid(world, x, y, margin)) continue
+    if (liveGrid?.overlaps(x, y)) continue
     out.push({
       x,
       y,
@@ -1167,6 +1252,44 @@ function seedVolume(
   }
   // Seeds that did not fit the particle budget: water the user asked for and did not get.
   return { seeds: out, spacing, truncated: filled.length - i }
+}
+
+/** Live particles bucketed by cells of size r: does any lie within r of a point? */
+class LiveGrid {
+  private readonly cells = new Map<number, number[]>()
+  private readonly live: { x: Float64Array; y: Float64Array; n: number }
+  private readonly r: number
+
+  constructor(live: { x: Float64Array; y: Float64Array; n: number }, r: number) {
+    this.live = live
+    this.r = r
+    for (let i = 0; i < live.n; i++) {
+      const k = this.key(Math.floor(live.x[i]! / r), Math.floor(live.y[i]! / r))
+      const cell = this.cells.get(k)
+      if (cell) cell.push(i)
+      else this.cells.set(k, [i])
+    }
+  }
+
+  overlaps(x: number, y: number): boolean {
+    const r = this.r
+    const cx = Math.floor(x / r)
+    const cy = Math.floor(y / r)
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        for (const i of this.cells.get(this.key(cx + ox, cy + oy)) ?? []) {
+          const dx = this.live.x[i]! - x
+          const dy = this.live.y[i]! - y
+          if (dx * dx + dy * dy < r * r) return true
+        }
+      }
+    }
+    return false
+  }
+
+  private key(cx: number, cy: number): number {
+    return (cx + 32768) * 65536 + (cy + 32768)
+  }
 }
 
 function hashVolumeId(id: string): number {
